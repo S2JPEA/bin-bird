@@ -37,6 +37,22 @@
       font-size: 13px; color: #e6edf4; opacity: .82; letter-spacing: .02em;
       text-shadow: 0 1px 3px rgba(0, 0, 0, .6);
     }
+    .d-flight { background: #5ab0e0; }
+    .pill .bar { width: 64px; height: 8px; border-radius: 4px; overflow: hidden;
+      background: rgba(255,255,255,.16); }
+    .pill .bar i { display: block; height: 100%; width: 0%;
+      background: linear-gradient(90deg, #4aa3e0, #7fd0ff); transition: width .08s linear; }
+    #toast {
+      position: fixed; left: 0; right: 0; top: 34%; text-align: center;
+      pointer-events: none; opacity: 0; transition: opacity .35s ease;
+    }
+    #toast span {
+      display: inline-block; max-width: 80vw; padding: 12px 22px;
+      background: rgba(18, 24, 32, .82); border: 1px solid rgba(255,255,255,.14);
+      border-radius: 14px; color: #fff; font-size: 20px; font-weight: 700;
+      line-height: 1.3; text-shadow: 0 2px 6px rgba(0,0,0,.5);
+    }
+    #toast.show { opacity: 1; }
 
     /* small build tag so it's obvious which stage is live */
     #stage-tag {
@@ -63,11 +79,13 @@
       <div class="pill"><i class="dot d-health"></i>Health <b id="hud-health">$5</b></div>
       <div class="pill"><i class="dot d-food"></i>Food <b id="hud-food">0</b></div>
       <div class="pill"><i class="dot d-level"></i>Level <b id="hud-level">1</b></div>
+      <div class="pill" id="hud-flight" style="display:none"><i class="dot d-flight"></i>Flight <span class="bar"><i id="hud-stam"></i></span></div>
     </div>
     <div id="objective">Raid the bins · level up · fly to South Bank</div>
+    <div id="toast"><span></span></div>
     <!-- start / win / fail screens added in later stages -->
   </div>
-  <div id="stage-tag">Bins Chickens — Queen St Mall · click to look · WASD move · Shift run</div>
+  <div id="stage-tag">Bins Chickens — stage 5 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -125,6 +143,21 @@
         refill: 25,          // seconds for a bin to refill after emptying
         minValue: 1, maxValue: 2,
         spacing: 6,          // minimum distance between bins
+      },
+      progress: {            // food → level → stats (DESIGN.md §7/§9)
+        foodPerLevel: [4, 6, 9, 12],   // L1→2, L2→3, L3→4, L4→5 (cumulative 4/10/19/31)
+        flightUnlockLevel: 2,
+        winLevel: 5,
+        healthBase: 5, healthPerLevel: 2,     // maxHealth: $5 → $13
+        staminaBase: 2.0, staminaPerLevel: 0.8, // flight seconds: L2 2.0 → L5 4.4
+      },
+      flight: {
+        speed: 12,           // horizontal units/s while airborne
+        ascendSpeed: 7,      // climb rate holding Space
+        gravity: 10,         // fall rate when not thrusting
+        maxAltitude: 30,     // clears every building
+        drainRate: 1.0,      // stamina/s while airborne
+        refillRate: 2.0,     // stamina/s recovered on the ground
       },
     };
 
@@ -196,14 +229,15 @@
       };
     }
 
-    function addCollider(x, z, w, d) {
-      COLLIDERS.push({ minX: x - w/2, maxX: x + w/2, minZ: z - d/2, maxZ: z + d/2 });
+    function addCollider(x, z, w, d, topY = Infinity) {
+      COLLIDERS.push({ minX: x - w/2, maxX: x + w/2, minZ: z - d/2, maxZ: z + d/2, topY });
     }
     const shade = (hex, amt) => new THREE.Color(hex).offsetHSL(0, 0, amt).getHex();
 
     // circle-vs-AABB push-out (DESIGN.md §5.3)
     function resolveCollisions(pos, r) {
       for (const c of COLLIDERS) {
+        if (pos.y > c.topY) continue;          // flying above this rooftop
         const cx = Math.max(c.minX, Math.min(pos.x, c.maxX));
         const cz = Math.max(c.minZ, Math.min(pos.z, c.maxZ));
         const dx = pos.x - cx, dz = pos.z - cz;
@@ -221,10 +255,12 @@
       }
     }
 
-    // keep a grounded ibis on the CBD side of the river (George end is −X)
+    // a grounded ibis can't stand on the water: if it's in the river band, push
+    // it back to the CBD bank. South Bank (x ≤ farX) and the CBD (x ≥ nearX) are
+    // fine. (Stage 6 turns the water-band case into the splash/fail.)
     function clampToLand(pos, r) {
-      const nx = CONFIG.world.river.nearX + r;
-      if (pos.x < nx) pos.x = nx;
+      const R = CONFIG.world.river;
+      if (pos.x < R.nearX + r && pos.x > R.farX) pos.x = R.nearX + r;
     }
 
     function buildWorld() {
@@ -338,7 +374,7 @@
       const body = new THREE.Mesh(new THREE.BoxGeometry(len, h, depth),
         new THREE.MeshLambertMaterial({ color: s.color }));
       body.position.set(cx, h/2, cz); scene.add(body);
-      addCollider(cx, cz, len, depth);
+      addCollider(cx, cz, len, depth, h);     // topY = building height (fly over it)
 
       const wallZ = cz - dir * (depth/2);             // the mall-facing wall
       const facing = -dir;                            // +1 faces +z, −1 faces −z
@@ -529,8 +565,23 @@
     }
 
     // procedural waddle / idle bob
-    function animateIbis(root, dt, moving) {
+    function animateIbis(root, dt, moving, flying) {
       const u = root.userData;
+      if (flying) {
+        u.walkPhase += dt * 16;                               // fast wingbeat
+        const flap = Math.sin(u.walkPhase) * 0.9;
+        u.wings[0].rotation.z = -0.35 - flap;                 // left wing
+        u.wings[1].rotation.z =  0.35 + flap;                 // right wing
+        u.body.position.y = 0;
+        u.body.rotation.z = 0;
+        u.body.rotation.x = 0.22;                             // pitch forward in the air
+        u.neck.rotation.z = 0;
+        u.head.rotation.x = -0.1;
+        u.legs[0].rotation.x = -0.6; u.legs[1].rotation.x = -0.6;   // legs trailing
+        return;
+      }
+      u.wings[0].rotation.z = 0; u.wings[1].rotation.z = 0;   // reset flight pose
+      u.body.rotation.x = 0;
       u.walkPhase += dt * (moving ? 10 : 2.2);
       const amp = moving ? 1 : 0.35;
       u.body.position.y = Math.abs(Math.sin(u.walkPhase)) * 0.05 * amp;
@@ -568,14 +619,62 @@
     /* ======================================================================
      * PLAYER STATE + HUD (DESIGN.md §3.9) — health in dollars
      * ==================================================================== */
-    const player = { food: 0, level: 1, health: 5, maxHealth: 5 };
+    const player = { food: 0, level: 1, health: 5, maxHealth: 5, stamina: 0, maxStamina: 0 };
+    const P = CONFIG.progress;
     const hudHealth = document.getElementById('hud-health');
     const hudFood   = document.getElementById('hud-food');
     const hudLevel  = document.getElementById('hud-level');
+    const hudFlight = document.getElementById('hud-flight');
+    const hudStam   = document.getElementById('hud-stam');
+    const toastEl   = document.getElementById('toast');
+    const toastSpan = toastEl.querySelector('span');
+    let toastTimer = 0;
+
+    const canFly        = () => player.level >= P.flightUnlockLevel;
+    const maxHealthFor  = (lvl) => P.healthBase + P.healthPerLevel * (lvl - 1);
+    const maxStaminaFor = (lvl) => lvl >= P.flightUnlockLevel
+      ? P.staminaBase + P.staminaPerLevel * (lvl - P.flightUnlockLevel) : 0;
+    const cumulativeFood = (lvl) => P.foodPerLevel.slice(0, lvl - 1).reduce((a, b) => a + b, 0);
+
     function updateHUD() {
-      hudHealth.textContent = '$' + player.health;
+      hudHealth.textContent = '$' + Math.round(player.health);
       hudFood.textContent   = player.food;
       hudLevel.textContent  = player.level;
+      if (canFly()) {
+        hudFlight.style.display = '';
+        hudStam.style.width = (player.maxStamina ? (player.stamina / player.maxStamina) * 100 : 0) + '%';
+      }
+    }
+
+    function showToast(text, ms = 2800) {
+      toastSpan.textContent = text;
+      toastEl.classList.add('show');
+      toastTimer = ms / 1000;
+    }
+    function updateToast(dt) {
+      if (toastTimer > 0 && (toastTimer -= dt) <= 0) toastEl.classList.remove('show');
+    }
+
+    function applyLevel() {                       // bump stats for the new level
+      const nm = maxHealthFor(player.level);
+      player.health = Math.min(nm, player.health + (nm - player.maxHealth));
+      player.maxHealth = nm;
+      player.maxStamina = maxStaminaFor(player.level);
+      player.stamina = player.maxStamina;         // full tank as a level-up reward
+    }
+    const LEVEL_LINES = {
+      2: 'LEVEL 2! Wings unlocked — hold SPACE to take off, ya legend!',
+      3: 'LEVEL 3! Bigger wings, longer flights.',
+      4: 'LEVEL 4! Nearly river-ready… keep raiding those bins.',
+      5: "LEVEL 5! Full tank — fang it across to South Bank!",
+    };
+    function checkLevelUp() {
+      while (player.level < P.winLevel && player.food >= cumulativeFood(player.level + 1)) {
+        player.level++;
+        applyLevel();
+        showToast(LEVEL_LINES[player.level] || ('LEVEL ' + player.level + '!'));
+      }
+      updateHUD();
     }
 
     /* ======================================================================
@@ -647,7 +746,7 @@
             player.food += bin.value;
             setBinFull(bin, false);
             bin.refillLeft = C.refill;
-            updateHUD();
+            checkLevelUp();          // may raise level → health/stamina/flight
             // pickup squawk comes in stage 9
           }
         } else {
@@ -682,12 +781,15 @@
     const moveVec = new THREE.Vector3();
     const lookPoint = new THREE.Vector3();
     const camDesired = new THREE.Vector3();
+    let vy = 0;                                       // vertical velocity for flight
 
     function tick() {
       const dt = Math.min(clock.getDelta(), 0.05);   // clamp to survive tab stalls
       const f = CONFIG.camera.follow;
+      const F = CONFIG.flight;
+      const groundY = CONFIG.ibis.bodyHeight;
 
-      // --- movement, relative to camera yaw ---
+      // --- horizontal input, relative to camera yaw ---
       fwd.set(-Math.sin(camYaw), 0, -Math.cos(camYaw));   // "forward" = away from camera
       right.crossVectors(fwd, UP).normalize();            // screen-right
       moveVec.set(0, 0, 0);
@@ -695,36 +797,51 @@
       if (keys['KeyS'] || keys['ArrowDown'])  moveVec.sub(fwd);
       if (keys['KeyD'] || keys['ArrowRight']) moveVec.add(right);
       if (keys['KeyA'] || keys['ArrowLeft'])  moveVec.sub(right);
-
       const moving = moveVec.lengthSq() > 0;
+
+      // --- vertical flight + stamina (DESIGN.md §3.2) ---
+      const thrust = canFly() && keys['Space'] && player.stamina > 0;
+      let airborne = ibis.position.y > groundY + 0.001;
+      if (thrust) vy = F.ascendSpeed;
+      else if (airborne) vy -= F.gravity * dt;              // no thrust → fall
+      ibis.position.y += vy * dt;
+      if (ibis.position.y >= groundY + F.maxAltitude) { ibis.position.y = groundY + F.maxAltitude; if (vy > 0) vy = 0; }
+      if (ibis.position.y <= groundY) { ibis.position.y = groundY; vy = 0; }
+      airborne = ibis.position.y > groundY + 0.001;
+      if (airborne) player.stamina = Math.max(0, player.stamina - F.drainRate * dt);
+      else if (player.maxStamina) player.stamina = Math.min(player.maxStamina, player.stamina + F.refillRate * dt);
+
+      // --- horizontal move (flight speed in the air; walk/run on the ground) ---
       if (moving) {
         moveVec.normalize();
-        const sprint = (keys['ShiftLeft'] || keys['ShiftRight']) ? CONFIG.ibis.sprintMul : 1;
-        ibis.position.addScaledVector(moveVec, CONFIG.ibis.walkSpeed * sprint * dt);
-
-        const B = CONFIG.world.bounds;                              // stay on the map
-        ibis.position.x = Math.max(B.minX, Math.min(B.maxX, ibis.position.x));
-        ibis.position.z = Math.max(B.minZ, Math.min(B.maxZ, ibis.position.z));
-
-        const targetYaw = Math.atan2(moveVec.x, moveVec.z);        // face travel
+        const hSpeed = airborne
+          ? (player.stamina > 0 ? F.speed : 2)               // out of puff → barely steer, fall short
+          : CONFIG.ibis.walkSpeed * ((keys['ShiftLeft'] || keys['ShiftRight']) ? CONFIG.ibis.sprintMul : 1);
+        ibis.position.addScaledVector(moveVec, hSpeed * dt);
+        const targetYaw = Math.atan2(moveVec.x, moveVec.z);  // face travel
         ibis.rotation.y = lerpAngle(ibis.rotation.y, targetYaw, CONFIG.ibis.turnLerp);
       }
 
-      // keep the ibis out of buildings and off the water
-      resolveCollisions(ibis.position, CONFIG.ibis.radius);
-      clampToLand(ibis.position, CONFIG.ibis.radius);
-      ibis.position.y = CONFIG.ibis.bodyHeight;
+      // --- bounds + collisions ---
+      const Bnd = CONFIG.world.bounds;
+      ibis.position.x = Math.max(Bnd.minX, Math.min(Bnd.maxX, ibis.position.x));
+      ibis.position.z = Math.max(Bnd.minZ, Math.min(Bnd.maxZ, ibis.position.z));
+      resolveCollisions(ibis.position, CONFIG.ibis.radius); // (skips rooftops below you)
+      if (!airborne) clampToLand(ibis.position, CONFIG.ibis.radius);
 
-      animateIbis(ibis, dt, moving);
+      animateIbis(ibis, dt, moving, airborne);
       updateBins(dt, clock.getElapsedTime());
+      updateToast(dt);
+      if (canFly()) updateHUD();                            // keep the stamina bar live
 
-      // --- smoothed follow camera, orbited by the mouse ---
+      // --- smoothed follow camera (pulls back a touch in flight) ---
       lookPoint.copy(ibis.position); lookPoint.y += f.lookHeight;
+      const dist = f.distance + (airborne ? 3 : 0);
       const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
       camDesired.set(
-        lookPoint.x + Math.sin(camYaw) * cp * f.distance,
-        lookPoint.y + sp * f.distance,
-        lookPoint.z + Math.cos(camYaw) * cp * f.distance
+        lookPoint.x + Math.sin(camYaw) * cp * dist,
+        lookPoint.y + sp * dist,
+        lookPoint.z + Math.cos(camYaw) * cp * dist
       );
       if (camDesired.y < f.minHeight) camDesired.y = f.minHeight;
       camera.position.lerp(camDesired, f.posLerp);
