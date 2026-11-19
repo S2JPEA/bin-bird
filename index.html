@@ -85,7 +85,7 @@
     <div id="toast"><span></span></div>
     <!-- start / win / fail screens added in later stages -->
   </div>
-  <div id="stage-tag">Bins Chickens — stage 6 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
+  <div id="stage-tag">Bins Chickens — stage 7 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -158,6 +158,9 @@
         maxAltitude: 30,     // clears every building
         drainRate: 1.0,      // stamina/s while airborne
         refillRate: 2.0,     // stamina/s recovered on the ground
+      },
+      safeZone: {
+        rechargeRate: 0.7,   // $/second healed inside Hungry Jack's (≈ $1 / 1.5s)
       },
     };
 
@@ -307,6 +310,18 @@
         const cx = addBuilding(s);
         if (s.hj) sceneData.hungryJacks = { x: cx, z: 2, radius: 9 };
       }
+
+      // safe-zone marker on the mall in front of Hungry Jack's (DESIGN.md §3.6)
+      const hz = sceneData.hungryJacks;
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(hz.radius, 36),
+        new THREE.MeshBasicMaterial({ color: 0xffcf4d, transparent: true, opacity: 0.14, depthWrite: false }));
+      disc.rotation.x = -Math.PI/2; disc.position.set(hz.x, 0.07, hz.z);
+      scene.add(disc);
+      const ring = new THREE.Mesh(new THREE.RingGeometry(hz.radius - 0.35, hz.radius, 44),
+        new THREE.MeshBasicMaterial({ color: 0xffd86a, transparent: true, opacity: 0.55, depthWrite: false }));
+      ring.rotation.x = -Math.PI/2; ring.position.set(hz.x, 0.08, hz.z);
+      scene.add(ring);
+      sceneData.safeMarker = disc;
     }
 
     // a flat panel on a building's mall-facing wall (facade detailing)
@@ -612,7 +627,7 @@
     /* ======================================================================
      * PLAYER STATE + HUD (DESIGN.md §3.9) — health in dollars
      * ==================================================================== */
-    const player = { food: 0, level: 1, health: 5, maxHealth: 5, stamina: 0, maxStamina: 0 };
+    const player = { food: 0, level: 1, health: 5, maxHealth: 5, stamina: 0, maxStamina: 0, inSafeZone: false };
     const P = CONFIG.progress;
     const hudHealth = document.getElementById('hud-health');
     const hudFood   = document.getElementById('hud-food');
@@ -692,6 +707,24 @@
     function winGame() {
       game.mode = 'won';
       showToast("🏆 YOU MADE IT TO SOUTH BANK! Proper bin chicken, ya legend.", 999999);
+    }
+
+    // Hungry Jack's safe zone: recharge health + flag immunity (DESIGN.md §3.6).
+    // `inSafeZone` is read by enemies (stage 8) so they stand down here.
+    function updateSafeZone(dt, t) {
+      const hj = sceneData.hungryJacks;
+      const dx = ibis.position.x - hj.x, dz = ibis.position.z - hj.z;
+      const grounded = ibis.position.y <= CONFIG.ibis.bodyHeight + 0.5;
+      const inZone = grounded && (dx*dx + dz*dz) < hj.radius * hj.radius;
+      if (inZone && !player.inSafeZone)
+        showToast("🍔 Safe at Hungry Jack's — recharging. No junkies in here.", 2200);
+      player.inSafeZone = inZone;
+      if (inZone && player.health < player.maxHealth) {
+        player.health = Math.min(player.maxHealth, player.health + CONFIG.safeZone.rechargeRate * dt);
+        updateHUD();
+      }
+      if (sceneData.safeMarker)                      // gentle pulse
+        sceneData.safeMarker.material.opacity = 0.11 + Math.sin(t * 2.2) * 0.05;
     }
 
     /* ======================================================================
@@ -854,6 +887,10 @@
         const overWater = ibis.position.x < R.nearX && ibis.position.x > R.farX;
         if (ibis.position.x <= CONFIG.world.southLandingX) winGame();      // reached South Bank
         else if (grounded && overWater) splashFail();                      // in the drink
+
+        // safe zone recharge + health-zero fail (DESIGN.md §3.6)
+        updateSafeZone(dt, clock.getElapsedTime());
+        if (player.health <= 0) respawnAtHungryJacks("😵 Out cold — mugged to $0! Back to Hungry Jack's.");
 
         animateIbis(ibis, dt, moving, airborne);
       } else {
