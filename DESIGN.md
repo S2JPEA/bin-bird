@@ -75,7 +75,10 @@ tested against a known structure.
   marker).
 - **Bins.** Scattered along streets and the Mall; each bin is a simple mesh with
   a state (full/empty) and a food value. Placement is procedural but seeded so
-  the layout is stable between runs.
+  the layout is stable between runs. Emptied bins **refill on a timer (~25 s)** —
+  this is the anti-soft-lock mechanism given that the world persists across
+  respawn (§7 decision 9): without refill, repeated deaths could leave nothing to
+  scavenge.
 - **Interactions out:** feeds collision bounds (buildings block movement), the
   water boundary (river), spawn points (bins, enemies), and the safe zone test.
 
@@ -86,10 +89,12 @@ tested against a known structure.
 - **Two modes:**
   - **Walking** — grounded, gravity pins it to the terrain height, collides with
     buildings and bins.
-  - **Flying** — unlocked at a level threshold; space gains altitude, forward
-    momentum carries it. **Flight is limited by a stamina/range budget derived
-    from level/strength** — this is the mechanism that makes "fly across the
-    river" a progression gate, not a free action from minute one.
+  - **Flying** — **unlocks at level 2**; space gains altitude, forward momentum
+    carries it. Flight is limited by a **stamina bar** (§7 decision 8) that drains
+    airborne and refills on the ground; its max is set by **`strength`, which is
+    the flight-range stat** (§7 decision 3) and grows each level. This is the
+    mechanism that makes "fly across the river" a progression gate: the river is
+    only clearable at the **win-ready level 5**, not from minute one.
 - **Animation.** Cheap procedural: bob the body while walking, flap wings via
   rotation while flying, waggle the neck on squawk. No skeletal rigs.
 - **Interactions out:** position drives camera, collision, bin pickup proximity,
@@ -107,11 +112,11 @@ tested against a known structure.
   empties (and may refill on a timer). Each pickup adds to a `food` counter and
   plays a squawk.
 - **Levelling.** Crossing a food threshold raises `level`. Each level:
-  - raises **max health** (more dollars of buffer),
-  - raises **strength** (see §9 open question — governs flight range and/or
-    junkie resistance),
-  - at the defined level, **unlocks flight**; further levels **extend flight
-    range** toward the distance needed to clear the river.
+  - raises **max health** (more dollars of buffer; base $5, +$2/level),
+  - raises **strength**, which **governs flight range** (§7 decision 3) by
+    extending the max stamina bar,
+  - at **level 2, unlocks flight**; each further level extends range toward the
+    ~48-unit river crossing, clearable at the **win-ready level 5**.
 - **Interactions out:** writes stats to `game`, triggers HUD updates, level-up
   SFX + playful text, and gates flight. This is the spine the win condition
   hangs off.
@@ -149,9 +154,14 @@ tested against a known structure.
   zone) and health each frame and drive the state machine.
 
 ### 3.7 Save and reset (cookies)
-- **What persists:** `level`, `health`, `food`, `strength`, `canFly`,
-  `flightRange` — a tiny JSON blob. Not world state or positions (the world is
-  seeded/deterministic; the player resumes at the safe zone).
+- **What the cookie stores:** just `level`, `food`, and `health` — a 3-number
+  JSON blob. `strength`, `canFly`, and max stamina/flight range are all **derived
+  from `level`** via `CONFIG`, so they need not be stored.
+- **World state is NOT cookied.** Per §7 decision 9, the world (emptied bins,
+  enemy positions) persists **in memory across a respawn within a session**, but a
+  full page reload regenerates it from seed and restores only the 3 saved stats
+  (player resumes at the safe zone). This keeps the save tiny while honouring
+  "world persists on respawn".
 - **How:** one cookie, JSON-stringified, URL-encoded, written on meaningful
   change (level-up, pickup, death) and/or on a throttle; read on load to resume.
 - **Reset:** a button on the start screen (and/or pause) that expires the cookie
@@ -291,9 +301,10 @@ counts jump.
   tune them together with flight range.
 
 ### 5.5 Cookie size and persistence
-- **Well within limits.** A cookie caps around ~4 KB; the save is only a few
-  integers/booleans as JSON — kilobytes to spare. Keep it to the §3.7 fields;
-  **do not** try to serialise world or positions.
+- **Well within limits.** A cookie caps around ~4 KB; the save is only **three
+  integers** as JSON (level, food, health — §3.7) — kilobytes to spare. **Do not**
+  serialise world state or positions; the world persists in memory across respawn
+  and regenerates from seed on reload (§7 decision 9).
 - **Risks:** `file://` cookie quirks in some browsers, and users with cookies
   disabled. Mitigate: wrap read/write in try/catch, degrade gracefully to an
   in-memory session (game still playable, just won't persist), and consider
@@ -323,43 +334,47 @@ tooling. If a feature isn't in §3, it isn't in v1.
 
 ---
 
-## 7. Open design questions to decide before implementation
+## 7. Design decisions (resolved)
 
-These are the knobs that determine whether the game is fun and fair. Decide them
-up front (defaults suggested) so stage 5–10 tuning has targets.
+The knobs that determine whether the game is fun and fair — now decided. Numbers
+live in §9; each decision notes what still needs playtest tuning in stages 5–10.
 
-1. **Food needed to win / per level.** How many food items per level, and how
-   many levels before the river is crossable? (Suggested starting point: a
-   smooth curve, e.g. each level needs a bit more than the last, with the
-   flight-capable level reachable in a single focused session.)
-2. **Flight unlock threshold & range curve.** At which level does flight unlock,
-   and how does range scale per level so that **the river is only clearable at
-   the intended "win-ready" level** — not before, not trivially after? This is
-   the single most important balance point; it ties directly to §5.4 river width.
-3. **What does `strength` actually do?** The brief says level-up raises strength,
-   but its gameplay effect is unspecified. Candidates: governs **flight
-   range/power**, reduces **junkie damage** (resist being mugged), or both. Pick
-   one so it's not a dead stat.
-4. **Health economy.** Starting dollars, max health per level, junkie damage ($1
-   confirmed) and hit cooldown, and recharge rate at Hungry Jack's. Together
-   these set how punishing the streets feel.
-5. **Enemy density & aggression.** How many junkies/police, detect radii,
-   junkie approach speed, police shoo strength and patrol range. Controls overall
-   difficulty.
-6. **Bin density & refill.** How many bins, how much food each, and whether/how
-   fast they refill — this sets scavenging pace and whether backtracking is
-   viable.
-7. **World size.** Grid dimensions / block count — big enough to feel like a CBD,
-   small enough to stay cheap and navigable (ties to §5.1 and §5.2).
-8. **Flight model.** Stamina/fuel that depletes and refills, vs. a fixed max
-   distance per launch? Affects how the river crossing feels and how §3.2 is
-   built.
-9. **Do bins/enemies persist across respawn**, or reset? (Suggested: world
-   resets to its seeded state on respawn; only player stats persist — matches
-   §3.7.)
-10. **Difficulty framing.** One fixed difficulty, or does it ramp with level
-    (tougher junkies as you get stronger)? Decide before §3.5 so enemy scaling
-    isn't bolted on later.
+1. **Food needed to win / per level — DECIDED: short run (~5–10 min).** Win-ready
+   at **level 5**; per-level food requirement rises gently (4 / 6 / 9 / 12),
+   ≈31 food total. *Tune:* exact thresholds vs. bin density so pace feels right.
+2. **Flight unlock & range curve — DECIDED.** Flight unlocks at **level 2**;
+   range (via stamina, see decision 8) grows per level so the **river (~48 units)
+   is only clearable at level 5** — L4 range falls short (splash), L5 clears. This
+   is the single most important relationship. *Tune:* river width and the stamina
+   curve together in stage 6.
+3. **What `strength` does — DECIDED: flight range.** Strength is the stat that
+   governs how far/high the ibis flies; levelling it up is the path to crossing
+   the river. Not a damage-resistance stat. *Tune:* range-per-level curve.
+4. **Health economy — DECIDED: cheeky but forgiving.** Start **$5**, **+$2/level**
+   → **$13** at L5; junkie **$1/hit** with ~2 s cooldown; Hungry Jack's heals
+   **+$1 per ~1.5 s**. Deaths should be rare. *Tune:* heal rate and cooldown.
+5. **Enemy density & aggression — DECIDED: light, fixed.** ~**5 junkies** (always
+   outrunnable), ~**3 police**; modest detect/shoo radii. *Tune:* counts and radii
+   for comedic-nuisance feel without frustration.
+6. **Bin density & refill — DECIDED.** ~**18 bins**, food value 1–2, **refill
+   ~25 s** after emptying. Refill is also the anti-soft-lock mechanism given
+   decision 9. *Tune:* count and refill time vs. run length.
+7. **World size — DECIDED: compact CBD.** ≈**120 × 120 units**, ~5 × 5 blocks.
+   *Tune:* extent vs. navigability and draw-call headroom.
+8. **Flight model — DECIDED: stamina/fuel bar.** Drains airborne, refills on the
+   ground, max grows with level; running dry over water = splash. *Tune:* drain/
+   refill rates and max-stamina curve.
+9. **World persistence on respawn — DECIDED: world persists.** On death→respawn
+   the city/bins/enemies keep their state (bins stay emptied, enemies keep
+   positions). Bins refilling on a timer (decision 6) prevents repeated deaths
+   from soft-locking the run. **Note:** only *player stats* are cookied (see
+   §3.7/§5.5); world state persists in memory across a respawn but regenerates
+   from seed on a full page reload.
+10. **Difficulty framing — DECIDED: fixed.** No enemy scaling with level; the
+    player's own growth (health, flight range) is the power curve.
+
+> All §9 numbers are **starting defaults**, not frozen balance — stages 5–10
+> exist to tune them against real play.
 
 ---
 
@@ -372,12 +387,45 @@ up front (defaults suggested) so stage 5–10 tuning has targets.
 - Progress persists across refresh and can be reset.
 - Holds a smooth frame rate with draw calls within budget during normal play.
 
-## 9. Config block (single source of truth)
+## 9. Config block — starting default profile
 
-Every number named above lives in one `CONFIG` object so tuning §7 is a
-one-place edit: world dimensions, river region + shoreline height + South Bank
-zone, bin count/value/refill, food-per-level curve, health base/per-level,
-junkie damage/cooldown/speed/count/radius, police count/shoo/patrol, flight
-unlock level + range curve + stamina, recharge rate, camera offsets/smoothing,
-and audio master volume. Nothing gameplay-affecting should be a magic number
-buried in a system.
+Every gameplay number lives in one `CONFIG` object (single source of truth; no
+magic numbers buried in systems). These are the **starting defaults** derived
+from the §7 decisions, to be tuned in stages 5–10 — nothing here is frozen.
+
+**Progression / win gate**
+- Win-ready level: **5**; flight unlocks at level: **2**.
+- Food to reach next level: L1→2 **4**, L2→3 **6**, L3→4 **9**, L4→5 **12**
+  (≈**31** cumulative to win-ready).
+
+**Flight (strength = range, via stamina)**
+- Horizontal flight speed: **~12 units/s** (constant).
+- Max stamina (seconds airborne) by level: L2 **2.0**, L3 **2.8**, L4 **3.6**,
+  L5 **4.4** (+0.8/level from unlock). Ground refill: **~1.5×** the drain rate.
+- Range per full dash ≈ speed × stamina: L2 ≈ **24**, L4 ≈ **43**, L5 ≈ **53**.
+- **River crossing width (near bank → South Bank landing): ~48 units** → L4
+  falls short (splash), L5 clears with margin. Tune width + stamina together.
+
+**Health economy (dollars)**
+- Max health: base **$5** at L1, **+$2/level** → **$13** at L5; respawn restores
+  to current max.
+- Junkie damage: **$1/hit**, per-junkie cooldown **~2 s**.
+- Hungry Jack's: heal **+$1 per ~1.5 s** up to max; **no damage** inside the zone.
+
+**Enemies (fixed difficulty)**
+- Junkies: count **~5**, detect radius **~8 units**, approach speed **below** ibis
+  walk speed (always escapable); idle-wander when out of range.
+- Police: count **~3**, patrol near Mall/landmarks, shoo radius **~5 units**,
+  moderate repel impulse, **no damage**. Both stand down in the safe zone;
+  distance-culled.
+
+**World / bins (compact CBD)**
+- World extent ≈ **120 × 120 units** (CBD + river + South Bank strip).
+- Street grid ≈ **5 × 5 blocks**; buildings **~40–60** via `InstancedMesh`.
+- Bins: **~18**, food value **1–2**, **refill ~25 s** after emptying.
+- River region + shoreline height + South Bank landing zone as explicit numbers
+  (tied to the ~48-unit crossing width above).
+
+**Camera / audio**
+- Follow offset behind + above the ibis, lerp smoothing; wider framing in flight.
+- Audio master volume + mute flag.
