@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Bins Chickens</title>
+  <style>
+    /* ---- base / layout ---------------------------------------------------- */
+    :root { color-scheme: dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #11161d; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #eef2f6;
+      -webkit-font-smoothing: antialiased;
+    }
+    #game { display: block; width: 100vw; height: 100vh; touch-action: none; }
+
+    /* ---- UI overlay (filled in later stages: HUD, start/win/fail screens) -- */
+    #ui { position: fixed; inset: 0; pointer-events: none; }
+
+    /* small build tag so it's obvious which stage is live */
+    #stage-tag {
+      position: fixed; left: 10px; bottom: 8px;
+      font-size: 12px; letter-spacing: .04em; color: #8fa3b6;
+      opacity: .75; pointer-events: none; user-select: none;
+    }
+  </style>
+
+  <!-- Three.js from CDN, pinned. Addons mapped for later stages (geometry merge, etc.). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="ui"><!-- HUD + screens added in later stages --></div>
+  <div id="stage-tag">Bins Chickens — stage 1</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    /* ======================================================================
+     * CONFIG — single source of truth (grows each stage; see DESIGN.md §9)
+     * Stage 1 only needs world size, palette and camera basics.
+     * ==================================================================== */
+    const CONFIG = {
+      world: {
+        size: 120,          // ground extent in units (compact CBD, DESIGN.md §9)
+      },
+      palette: {
+        sky:    0x9fc6e8,   // hazy Brisbane sky
+        fog:    0x9fc6e8,   // match sky so the horizon dissolves
+        ground: 0x7a8b5e,   // dusty green-grey
+        grid:   0x61708f,   // faint street-grid tint
+        sun:    0xfff2d6,   // warm key light
+      },
+      camera: {
+        fov: 55, near: 0.1, far: 600,
+        height: 14, distance: 26,   // used by the temporary orbit (stage 2 → follow cam)
+      },
+      fog: { near: 60, far: 240 },
+    };
+
+    /* ======================================================================
+     * RENDERER
+     * ==================================================================== */
+    const canvas = document.getElementById('game');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    /* ======================================================================
+     * SCENE + atmosphere
+     * ==================================================================== */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(CONFIG.palette.sky);
+    scene.fog = new THREE.Fog(CONFIG.palette.fog, CONFIG.fog.near, CONFIG.fog.far);
+
+    /* ======================================================================
+     * CAMERA
+     * ==================================================================== */
+    const camera = new THREE.PerspectiveCamera(
+      CONFIG.camera.fov,
+      window.innerWidth / window.innerHeight,
+      CONFIG.camera.near,
+      CONFIG.camera.far
+    );
+    camera.position.set(0, CONFIG.camera.height, CONFIG.camera.distance);
+    camera.lookAt(0, 0, 0);
+
+    /* ======================================================================
+     * LIGHTS — cheap two-light rig (DESIGN.md §5.1)
+     * ==================================================================== */
+    const hemi = new THREE.HemisphereLight(CONFIG.palette.sky, CONFIG.palette.ground, 0.9);
+    scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(CONFIG.palette.sun, 1.1);
+    sun.position.set(40, 60, 20);
+    scene.add(sun);
+
+    /* ======================================================================
+     * GROUND — stylised plane sized to the world, with a faint street grid
+     * ==================================================================== */
+    const groundGeo = new THREE.PlaneGeometry(CONFIG.world.size, CONFIG.world.size);
+    const groundMat = new THREE.MeshLambertMaterial({ color: CONFIG.palette.ground });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;   // lay flat
+    scene.add(ground);
+
+    // faint grid for scale + motion cues (one line-segments draw call)
+    const grid = new THREE.GridHelper(
+      CONFIG.world.size, CONFIG.world.size / 4,
+      CONFIG.palette.grid, CONFIG.palette.grid
+    );
+    grid.material.transparent = true;
+    grid.material.opacity = 0.25;
+    grid.position.y = 0.02;             // avoid z-fighting with the ground
+    scene.add(grid);
+
+    /* ======================================================================
+     * RESIZE
+     * ==================================================================== */
+    function onResize() {
+      const w = window.innerWidth, h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener('resize', onResize);
+
+    /* ======================================================================
+     * MAIN LOOP — delta-clamped (DESIGN.md §5.7)
+     * Stage 1: a slow auto-orbit proves the loop is live. Stage 2 replaces
+     * this with the ibis follow camera.
+     * ==================================================================== */
+    const clock = new THREE.Clock();
+    let orbitAngle = 0;
+
+    function tick() {
+      const dt = Math.min(clock.getDelta(), 0.05);   // clamp to survive tab stalls
+
+      orbitAngle += dt * 0.15;
+      const r = CONFIG.camera.distance;
+      camera.position.set(
+        Math.sin(orbitAngle) * r,
+        CONFIG.camera.height,
+        Math.cos(orbitAngle) * r
+      );
+      camera.lookAt(0, 0, 0);
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
