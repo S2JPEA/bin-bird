@@ -245,8 +245,8 @@
       scene.add(south);
 
       addBridge();                       // Victoria Bridge (decorative landmark)
-      addWheel(R.farX - 10, -16);        // Wheel of Brisbane, on South Bank
-      addClockTower(-18, 34);            // City Hall clock tower, behind the NE side
+      addWheel(R.farX - 10, 16);         // Wheel of Brisbane, on South Bank
+      addClockTower(-18, -34);           // City Hall clock tower, behind the Adelaide-side row (−z)
 
       // --- Queen Street Mall pavement (terracotta spine) -----------------
       const pave = flat(new THREE.Mesh(
@@ -258,24 +258,25 @@
       addCrossStreet(47);                // Edward Street
 
       // --- buildings in real order, George (−X) → Edward (+X) ------------
+      // Facing the river, Hungry Jack's / Uptown are on the LEFT (+z) bank.
       const B = [
-        // SW side (Elizabeth / river side) — odd street numbers
-        { name:'UPTOWN',            side:'sw', x0:-46, x1:-26, height:26, style:'modern',   color:0x8b9099, sign:{ fg:'#ffffff', bg:'#17191d' } },
-        { name:"HUNGRY JACK'S",     side:'sw', x0:-22, x1:-10, height:10, style:'heritage', color:0x8c5a3a, trim:0xb37c52, sign:{ fg:'#ffd23b', bg:'#d2232a' }, hj:true },
-        { name:'REGENT',            side:'sw', x0:2,   x1:14,  height:17, style:'heritage', color:0xcbb48e, trim:0xe6d6a8, sign:{ fg:'#e8c56b', bg:'#241a10' } },
-        { name:'WINTERGARDEN',      side:'sw', x0:16,  x1:30,  height:19, style:'modern',   color:0x7f93a0, sign:{ fg:'#ffffff', bg:'#1f7a57' } },
-        { name:"TATTERSALL'S",      side:'sw', x0:32,  x1:44,  height:15, style:'heritage', color:0xcfc29c, trim:0xe6dbbb, sign:{ fg:'#2f2416', bg:'#e4d9b6' } },
-        { name:'MACARTHUR CENTRAL', side:'sw', x0:49,  x1:59,  height:16, style:'heritage', color:0x9a5f45, trim:0xc08a62, sign:{ fg:'#f2e9d2', bg:'#4a2f22' } },
-        // NE side (Adelaide side) — even street numbers (first two: generic heritage)
-        {                           side:'ne', x0:-46, x1:-30, height:18, style:'heritage', color:0xb7a884, trim:0xd8cba3 },
-        {                           side:'ne', x0:-26, x1:-12, height:14, style:'heritage', color:0xa98f6e, trim:0xcbb48e },
-        { name:'BRISBANE ARCADE',   side:'ne', x0:2,   x1:14,  height:15, style:'arcade',   color:0xd8c49a, trim:0xece0c0, sign:{ fg:'#2f2416', bg:'#e8dcbb' } },
-        { name:'BROADWAY',          side:'ne', x0:16,  x1:26,  height:14, style:'modern',   color:0x8c8f97, sign:{ fg:'#ffffff', bg:'#222630' } },
-        { name:'QUEENSPLAZA',       side:'ne', x0:30,  x1:50,  height:24, style:'modern',   color:0x8f9aa6, sign:{ fg:'#efe7d8', bg:'#1b2430' } },
+        // Elizabeth / river side (+z) — Uptown fronts Elizabeth St
+        { name:'UPTOWN',            side:'ne', x0:-46, x1:-26, height:26, style:'modern',   color:0x8b9099, sign:{ fg:'#ffffff', bg:'#17191d' } },
+        { name:"HUNGRY JACK'S",     side:'ne', x0:-22, x1:-10, height:10, style:'heritage', color:0x8c5a3a, trim:0xb37c52, sign:{ fg:'#ffd23b', bg:'#d2232a' }, hj:true },
+        { name:'REGENT',            side:'ne', x0:2,   x1:14,  height:17, style:'heritage', color:0xcbb48e, trim:0xe6d6a8, sign:{ fg:'#e8c56b', bg:'#241a10' } },
+        { name:'WINTERGARDEN',      side:'ne', x0:16,  x1:30,  height:19, style:'modern',   color:0x7f93a0, sign:{ fg:'#ffffff', bg:'#1f7a57' } },
+        { name:"TATTERSALL'S",      side:'ne', x0:32,  x1:44,  height:15, style:'heritage', color:0xcfc29c, trim:0xe6dbbb, sign:{ fg:'#2f2416', bg:'#e4d9b6' } },
+        { name:'MACARTHUR CENTRAL', side:'ne', x0:49,  x1:59,  height:16, style:'heritage', color:0x9a5f45, trim:0xc08a62, sign:{ fg:'#f2e9d2', bg:'#4a2f22' } },
+        // Adelaide side (−z) — Brisbane Arcade runs through to Adelaide St (first two: generic heritage)
+        {                           side:'sw', x0:-46, x1:-30, height:18, style:'heritage', color:0xb7a884, trim:0xd8cba3 },
+        {                           side:'sw', x0:-26, x1:-12, height:14, style:'heritage', color:0xa98f6e, trim:0xcbb48e },
+        { name:'BRISBANE ARCADE',   side:'sw', x0:2,   x1:14,  height:15, style:'arcade',   color:0xd8c49a, trim:0xece0c0, sign:{ fg:'#2f2416', bg:'#e8dcbb' } },
+        { name:'BROADWAY',          side:'sw', x0:16,  x1:26,  height:14, style:'modern',   color:0x8c8f97, sign:{ fg:'#ffffff', bg:'#222630' } },
+        { name:'QUEENSPLAZA',       side:'sw', x0:30,  x1:50,  height:24, style:'modern',   color:0x8f9aa6, sign:{ fg:'#efe7d8', bg:'#1b2430' } },
       ];
       for (const s of B) {
         const cx = addBuilding(s);
-        if (s.hj) sceneData.hungryJacks = { x: cx, z: -2, radius: 9 };
+        if (s.hj) sceneData.hungryJacks = { x: cx, z: 2, radius: 9 };
       }
     }
 
@@ -375,7 +376,7 @@
     }
 
     function addBridge() {               // Victoria Bridge — spans the river along −X
-      const R = CONFIG.world.river, z = -16;
+      const R = CONFIG.world.river, z = 16;
       const len = (R.nearX - R.farX) + 20;
       const deck = new THREE.Mesh(new THREE.BoxGeometry(len, 0.7, 6),
         new THREE.MeshLambertMaterial({ color: 0x8a8f94 }));
