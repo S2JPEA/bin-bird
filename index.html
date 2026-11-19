@@ -63,8 +63,8 @@
       camera: {
         fov: 55, near: 0.1, far: 600,
         follow: {
-          distance: 10,      // how far behind the ibis the camera sits
-          lookHeight: 1.3,   // aim point above the ibis's feet
+          distance: 9,       // how far behind the ibis the camera sits
+          lookHeight: 1.15,  // aim point above the ibis's feet
           posLerp: 0.12,     // camera position smoothing per frame
           minHeight: 0.8,    // never let the camera dip below this
           yawSensitivity: 0.0026,
@@ -79,7 +79,7 @@
         walkSpeed: 9,        // units / second
         sprintMul: 1.7,      // hold Shift to run
         turnLerp: 0.2,       // how quickly the ibis turns to face travel
-        bodyHeight: 0.75,    // torso-root height above the ground
+        bodyHeight: 0.93,    // torso-root height above the ground (feet at y=0)
         bound: 0.92,         // stay within this fraction of the half-world
       },
     };
@@ -143,74 +143,97 @@
     scene.add(grid);
 
     /* ======================================================================
-     * IBIS — procedural low-poly bin chicken (DESIGN.md §3.2)
+     * IBIS — faceted "statue" bin chicken (DESIGN.md §3.2), styled after the
+     * angular Brisbane ibis sculptures: flat-shaded metal panels + hooked bill.
      * root (world position + facing yaw) → body group (waddle) → parts.
      * Local forward is +Z (torso long axis, neck and beak lead that way).
      * ==================================================================== */
     function createIbis() {
-      const COL = { body: 0xeae7dd, dark: 0x23242a, leg: 0x4a4f57, eye: 0xf2f2f2 };
-      const matBody = new THREE.MeshLambertMaterial({ color: COL.body });
-      const matDark = new THREE.MeshLambertMaterial({ color: COL.dark });
-      const matLeg  = new THREE.MeshLambertMaterial({ color: COL.leg });
-      const matEye  = new THREE.MeshLambertMaterial({ color: COL.eye });
+      // Faceted, flat-shaded "sculpture" look, modelled on Brisbane's angular
+      // ibis statues: pale metal panels, black hooked bill, thin dark legs.
+      const COL = { body: 0xe9e7df, dark: 0x191a1f, leg: 0x2b2d33, spec: 0xd8d8d2 };
+      const mk = (color, opts = {}) => new THREE.MeshStandardMaterial(
+        Object.assign({ color, flatShading: true, roughness: 0.68, metalness: 0.14 }, opts)
+      );
+      const matBody = mk(COL.body);
+      const matDark = mk(COL.dark, { roughness: 0.55, metalness: 0.22 });
+      const matLeg  = mk(COL.leg,  { roughness: 0.5,  metalness: 0.35 });
+      const matSpec = mk(COL.spec, { roughness: 0.4,  metalness: 0.4  });
 
       const root = new THREE.Group();   // placement + yaw
       const body = new THREE.Group();   // animation transforms
       root.add(body);
 
-      // torso — ovoid, long axis forward
-      const torso = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 10), matBody);
-      torso.scale.set(1.0, 0.85, 1.45);
+      // torso — faceted teardrop; an icosahedron gives clean flat panels
+      const torso = new THREE.Mesh(new THREE.IcosahedronGeometry(0.62, 1), matBody);
+      torso.scale.set(0.92, 1.02, 1.4);
+      torso.position.y = 0.05;
       body.add(torso);
 
-      // tail plume — dark, swept up at the back (−Z)
-      const tail = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.7, 8), matDark);
-      tail.position.set(0, 0.12, -0.78);
-      tail.rotation.x = -Math.PI * 0.62;
+      // breast — angular wedge for the statue's sharp chest
+      const breast = new THREE.Mesh(new THREE.ConeGeometry(0.4, 0.62, 5), matBody);
+      breast.position.set(0, -0.04, 0.46);
+      breast.rotation.x = Math.PI * 0.5;   // point forward
+      body.add(breast);
+
+      // tail — long pointed pale panel sweeping back and down
+      const tail = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1.05, 5), matBody);
+      tail.position.set(0, 0.02, -0.82);
+      tail.rotation.x = -Math.PI * 0.54;
       body.add(tail);
 
-      // neck — dark, rising and leaning forward from the front of the torso
-      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.17, 0.95, 8), matDark);
-      neck.position.set(0, 0.5, 0.55);
-      neck.rotation.x = 0.5;
+      // neck — tall, tapering, pentagonal (angular), leaning forward
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.2, 1.25, 5), matBody);
+      neck.position.set(0, 0.72, 0.5);
+      neck.rotation.x = 0.42;
       body.add(neck);
 
-      // head — dark sphere + long down-curved black beak + pale eyes
+      // head — small black octahedron atop the neck
       const head = new THREE.Group();
-      head.position.set(0, 0.95, 0.84);
+      head.position.set(0, 1.28, 0.78);
       body.add(head);
-      head.add(new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), matDark));
-      const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.78, 7), matDark);
-      beak.position.set(0, -0.06, 0.42);
-      beak.rotation.x = Math.PI * 0.62;   // forward and down — the ibis's signature
-      head.add(beak);
-      const eyeGeo = new THREE.SphereGeometry(0.035, 6, 6);
+      const skull = new THREE.Mesh(new THREE.OctahedronGeometry(0.19, 0), matDark);
+      skull.scale.set(1, 0.9, 1.1);
+      head.add(skull);
+
+      // beak — the signature: long straight base + a down-hooked tip, black
+      const beakBase = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.62, 4), matDark);
+      beakBase.position.set(0, -0.04, 0.42);
+      beakBase.rotation.x = Math.PI * 0.56;
+      head.add(beakBase);
+      const beakTip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.34, 4), matDark);
+      beakTip.position.set(0, -0.2, 0.66);
+      beakTip.rotation.x = Math.PI * 0.78;   // hooks sharply downward
+      head.add(beakTip);
+
+      // eyes — little pale rings (the statues' quirky "spectacles")
+      const ringGeo = new THREE.TorusGeometry(0.06, 0.016, 5, 10);
       for (const sx of [-1, 1]) {
-        const eye = new THREE.Mesh(eyeGeo, matEye);
-        eye.position.set(0.09 * sx, 0.05, 0.1);
+        const eye = new THREE.Mesh(ringGeo, matSpec);
+        eye.position.set(0.1 * sx, 0.06, 0.12);
         head.add(eye);
       }
 
-      // wings — flattened, folded along the torso (flap comes in stage 5)
+      // wings — flat angular panels folded along the torso (flap in stage 5)
       const wings = [];
       for (const sx of [-1, 1]) {
-        const wing = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), matBody);
-        wing.scale.set(0.18, 0.5, 1.1);
-        wing.position.set(0.5 * sx, 0.06, -0.05);
+        const wing = new THREE.Mesh(new THREE.OctahedronGeometry(0.45, 0), matBody);
+        wing.scale.set(0.14, 0.52, 0.95);
+        wing.position.set(0.48 * sx, 0.08, -0.06);
         body.add(wing);
         wings.push(wing);
       }
 
-      // legs — thin cylinders + a little foot, pivoting from the hip
+      // legs — thin, dark, angular (pentagon section) with a small foot
       const legs = [];
       for (const sx of [-1, 1]) {
         const leg = new THREE.Group();
-        leg.position.set(0.17 * sx, -0.2, 0.0);
-        const shank = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.55, 6), matLeg);
-        shank.position.y = -0.275;
+        leg.position.set(0.16 * sx, -0.28, 0.02);
+        const shank = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.66, 5), matLeg);
+        shank.position.y = -0.33;
         leg.add(shank);
-        const foot = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.03, 0.22), matLeg);
-        foot.position.set(0, -0.55, 0.05);
+        const foot = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.035, 0.26), matLeg);
+        foot.position.set(0, -0.65, 0.07);
         leg.add(foot);
         body.add(leg);
         legs.push(leg);
