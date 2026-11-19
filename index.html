@@ -85,7 +85,7 @@
     <div id="toast"><span></span></div>
     <!-- start / win / fail screens added in later stages -->
   </div>
-  <div id="stage-tag">Bins Chickens — stage 5 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
+  <div id="stage-tag">Bins Chickens — stage 6 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -255,13 +255,6 @@
       }
     }
 
-    // a grounded ibis can't stand on the water: if it's in the river band, push
-    // it back to the CBD bank. South Bank (x ≤ farX) and the CBD (x ≥ nearX) are
-    // fine. (Stage 6 turns the water-band case into the splash/fail.)
-    function clampToLand(pos, r) {
-      const R = CONFIG.world.river;
-      if (pos.x < R.nearX + r && pos.x > R.farX) pos.x = R.nearX + r;
-    }
 
     function buildWorld() {
       const R = CONFIG.world.river, M = CONFIG.world.mall;
@@ -678,6 +671,30 @@
     }
 
     /* ======================================================================
+     * GAME STATE — win / fail boundaries (DESIGN.md §3.6, §5.4)
+     * The win/fail *screens* arrive in stage 10; here we wire the transitions.
+     * ==================================================================== */
+    const game = { mode: 'playing' };            // 'playing' | 'won'
+
+    function respawnAtHungryJacks(reason) {      // splash now; also health-zero later
+      const hj = sceneData.hungryJacks;
+      ibis.position.set(hj.x, CONFIG.ibis.bodyHeight, hj.z);
+      ibis.rotation.y = 0;
+      vy = 0;
+      player.health = player.maxHealth;          // recharge at the safe zone
+      player.stamina = player.maxStamina;
+      updateHUD();
+      showToast(reason, 2600);
+    }
+    function splashFail() {
+      respawnAtHungryJacks("💦 SPLASH! Straight in the drink — back to Hungry Jack's.");
+    }
+    function winGame() {
+      game.mode = 'won';
+      showToast("🏆 YOU MADE IT TO SOUTH BANK! Proper bin chicken, ya legend.", 999999);
+    }
+
+    /* ======================================================================
      * BINS — scavenge junk food; empties on pickup, refills on a timer
      * (DESIGN.md §3.1, §3.4). Not colliders: you walk over them to grab food.
      * ==================================================================== */
@@ -789,50 +806,63 @@
       const F = CONFIG.flight;
       const groundY = CONFIG.ibis.bodyHeight;
 
-      // --- horizontal input, relative to camera yaw ---
-      fwd.set(-Math.sin(camYaw), 0, -Math.cos(camYaw));   // "forward" = away from camera
-      right.crossVectors(fwd, UP).normalize();            // screen-right
-      moveVec.set(0, 0, 0);
-      if (keys['KeyW'] || keys['ArrowUp'])    moveVec.add(fwd);
-      if (keys['KeyS'] || keys['ArrowDown'])  moveVec.sub(fwd);
-      if (keys['KeyD'] || keys['ArrowRight']) moveVec.add(right);
-      if (keys['KeyA'] || keys['ArrowLeft'])  moveVec.sub(right);
-      const moving = moveVec.lengthSq() > 0;
+      // --- gameplay (frozen once the game is won) ---
+      let moving = false, airborne = false;
+      if (game.mode === 'playing') {
+        // horizontal input, relative to camera yaw
+        fwd.set(-Math.sin(camYaw), 0, -Math.cos(camYaw));   // "forward" = away from camera
+        right.crossVectors(fwd, UP).normalize();            // screen-right
+        moveVec.set(0, 0, 0);
+        if (keys['KeyW'] || keys['ArrowUp'])    moveVec.add(fwd);
+        if (keys['KeyS'] || keys['ArrowDown'])  moveVec.sub(fwd);
+        if (keys['KeyD'] || keys['ArrowRight']) moveVec.add(right);
+        if (keys['KeyA'] || keys['ArrowLeft'])  moveVec.sub(right);
+        moving = moveVec.lengthSq() > 0;
 
-      // --- vertical flight + stamina (DESIGN.md §3.2) ---
-      const thrust = canFly() && keys['Space'] && player.stamina > 0;
-      let airborne = ibis.position.y > groundY + 0.001;
-      if (thrust) vy = F.ascendSpeed;
-      else if (airborne) vy -= F.gravity * dt;              // no thrust → fall
-      ibis.position.y += vy * dt;
-      if (ibis.position.y >= groundY + F.maxAltitude) { ibis.position.y = groundY + F.maxAltitude; if (vy > 0) vy = 0; }
-      if (ibis.position.y <= groundY) { ibis.position.y = groundY; vy = 0; }
-      airborne = ibis.position.y > groundY + 0.001;
-      if (airborne) player.stamina = Math.max(0, player.stamina - F.drainRate * dt);
-      else if (player.maxStamina) player.stamina = Math.min(player.maxStamina, player.stamina + F.refillRate * dt);
+        // vertical flight + stamina (DESIGN.md §3.2)
+        const thrust = canFly() && keys['Space'] && player.stamina > 0;
+        airborne = ibis.position.y > groundY + 0.001;
+        if (thrust) vy = F.ascendSpeed;
+        else if (airborne) vy -= F.gravity * dt;             // no thrust → fall
+        ibis.position.y += vy * dt;
+        if (ibis.position.y >= groundY + F.maxAltitude) { ibis.position.y = groundY + F.maxAltitude; if (vy > 0) vy = 0; }
+        if (ibis.position.y <= groundY) { ibis.position.y = groundY; vy = 0; }
+        airborne = ibis.position.y > groundY + 0.001;
+        if (airborne) player.stamina = Math.max(0, player.stamina - F.drainRate * dt);
+        else if (player.maxStamina) player.stamina = Math.min(player.maxStamina, player.stamina + F.refillRate * dt);
 
-      // --- horizontal move (flight speed in the air; walk/run on the ground) ---
-      if (moving) {
-        moveVec.normalize();
-        const hSpeed = airborne
-          ? (player.stamina > 0 ? F.speed : 2)               // out of puff → barely steer, fall short
-          : CONFIG.ibis.walkSpeed * ((keys['ShiftLeft'] || keys['ShiftRight']) ? CONFIG.ibis.sprintMul : 1);
-        ibis.position.addScaledVector(moveVec, hSpeed * dt);
-        const targetYaw = Math.atan2(moveVec.x, moveVec.z);  // face travel
-        ibis.rotation.y = lerpAngle(ibis.rotation.y, targetYaw, CONFIG.ibis.turnLerp);
+        // horizontal move (flight speed in the air; walk/run on the ground)
+        if (moving) {
+          moveVec.normalize();
+          const hSpeed = airborne
+            ? (player.stamina > 0 ? F.speed : 2)             // out of puff → barely steer, fall short
+            : CONFIG.ibis.walkSpeed * ((keys['ShiftLeft'] || keys['ShiftRight']) ? CONFIG.ibis.sprintMul : 1);
+          ibis.position.addScaledVector(moveVec, hSpeed * dt);
+          const targetYaw = Math.atan2(moveVec.x, moveVec.z); // face travel
+          ibis.rotation.y = lerpAngle(ibis.rotation.y, targetYaw, CONFIG.ibis.turnLerp);
+        }
+
+        // bounds + collisions
+        const Bnd = CONFIG.world.bounds;
+        ibis.position.x = Math.max(Bnd.minX, Math.min(Bnd.maxX, ibis.position.x));
+        ibis.position.z = Math.max(Bnd.minZ, Math.min(Bnd.maxZ, ibis.position.z));
+        resolveCollisions(ibis.position, CONFIG.ibis.radius); // (skips rooftops below you)
+
+        // win / fail boundaries (DESIGN.md §3.6, §5.4)
+        const R = CONFIG.world.river;
+        const grounded  = ibis.position.y <= groundY + 0.01;
+        const overWater = ibis.position.x < R.nearX && ibis.position.x > R.farX;
+        if (ibis.position.x <= CONFIG.world.southLandingX) winGame();      // reached South Bank
+        else if (grounded && overWater) splashFail();                      // in the drink
+
+        animateIbis(ibis, dt, moving, airborne);
+      } else {
+        animateIbis(ibis, dt, false, false);                 // idle once won
       }
 
-      // --- bounds + collisions ---
-      const Bnd = CONFIG.world.bounds;
-      ibis.position.x = Math.max(Bnd.minX, Math.min(Bnd.maxX, ibis.position.x));
-      ibis.position.z = Math.max(Bnd.minZ, Math.min(Bnd.maxZ, ibis.position.z));
-      resolveCollisions(ibis.position, CONFIG.ibis.radius); // (skips rooftops below you)
-      if (!airborne) clampToLand(ibis.position, CONFIG.ibis.radius);
-
-      animateIbis(ibis, dt, moving, airborne);
       updateBins(dt, clock.getElapsedTime());
       updateToast(dt);
-      if (canFly()) updateHUD();                            // keep the stamina bar live
+      if (canFly()) updateHUD();                             // keep the stamina bar live
 
       // --- smoothed follow camera (pulls back a touch in flight) ---
       lookPoint.copy(ibis.position); lookPoint.y += f.lookHeight;
