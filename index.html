@@ -67,7 +67,7 @@
     <div id="objective">Raid the bins · level up · fly to South Bank</div>
     <!-- start / win / fail screens added in later stages -->
   </div>
-  <div id="stage-tag">Bins Chickens — stage 4 · click to look · WASD move · Shift run</div>
+  <div id="stage-tag">Bins Chickens — Queen St Mall · click to look · WASD move · Shift run</div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -78,11 +78,13 @@
      * ==================================================================== */
     const CONFIG = {
       world: {
-        size: 120,          // play extent in units (compact CBD, DESIGN.md §9)
-        seed: 20260419,     // deterministic city layout
-        // river as a diagonal band: s = (x + z) / √2; water where nearS ≤ s ≤ farS
-        river: { nearS: 18, farS: 58, y: 0.06 },
-        spawn: { x: 0, z: 0, yaw: Math.PI/2 },   // Queen St Mall, looking down the corridor
+        seed: 20260419,     // deterministic bin placement
+        bounds: { minX: -104, maxX: 62, minZ: -30, maxZ: 30 },   // walkable extent
+        // Brisbane River crosses the George-Street (−X) end; South Bank beyond it
+        river: { nearX: -50, farX: -92, y: 0.06 },
+        southLandingX: -94, // South Bank landing (win target, stage 6)
+        mall: { x0: -46, x1: 50, z0: -6, z1: 6 },   // terracotta spine: George −X → Edward +X
+        spawn: { x: -2, z: 0, yaw: Math.PI/2 },      // near Albert St, looking toward the river
       },
       palette: {
         sky:    0x9fc6e8,   // hazy Brisbane sky
@@ -122,7 +124,7 @@
         pickupRadius: 1.8,   // how close to grab the food
         refill: 25,          // seconds for a bin to refill after emptying
         minValue: 1, maxValue: 2,
-        spacing: 7,          // minimum distance between bins
+        spacing: 6,          // minimum distance between bins
       },
     };
 
@@ -169,25 +171,22 @@
      * GROUND — stylised plane sized to the world, with a faint street grid
      * ==================================================================== */
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(200, 200),
+      new THREE.PlaneGeometry(420, 320),
       new THREE.MeshLambertMaterial({ color: CONFIG.palette.ground })
     );
     ground.rotation.x = -Math.PI / 2;   // lay flat
     scene.add(ground);
 
     /* ======================================================================
-     * WORLD — stylised Brisbane CBD: streets, blocks, buildings, Queen St
-     * Mall + Hungry Jack's, the diagonal river, South Bank, and landmarks
-     * (DESIGN.md §3.1, §5.1–5.4). Buildings and block pads are InstancedMeshes
-     * to keep the draw-call count low. Collision uses simple AABB push-out.
+     * WORLD — a faithful Queen Street Mall: a terracotta spine from the
+     * George-Street / river end (−X) to the Edward-Street end (+X), with the
+     * real buildings placed in order on each side, heritage facades and
+     * name-signs (DESIGN.md §3.1). Collision uses simple AABB push-out.
      * ==================================================================== */
-    const SQRT2 = Math.SQRT2;
     const COLLIDERS = [];                       // {minX,maxX,minZ,maxZ} for push-out
     const sceneData = { hungryJacks: null };
 
-    const sOf = (x, z) => (x + z) / SQRT2;      // diagonal river coordinate
-
-    // deterministic PRNG (mulberry32) — same city every run (§3.1)
+    // deterministic PRNG (mulberry32) — used for stable bin placement (§3.1)
     function mulberry32(a) {
       return function () {
         a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -196,13 +195,11 @@
         return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
       };
     }
-    const rng = mulberry32(CONFIG.world.seed);
-    const rand = (lo, hi) => lo + (hi - lo) * rng();
-    const pick = (arr) => arr[(rng() * arr.length) | 0];
 
     function addCollider(x, z, w, d) {
       COLLIDERS.push({ minX: x - w/2, maxX: x + w/2, minZ: z - d/2, maxZ: z + d/2 });
     }
+    const shade = (hex, amt) => new THREE.Color(hex).offsetHSL(0, 0, amt).getHex();
 
     // circle-vs-AABB push-out (DESIGN.md §5.3)
     function resolveCollisions(pos, r) {
@@ -224,184 +221,194 @@
       }
     }
 
-    // keep a grounded ibis on the CBD bank (can't walk onto the water)
+    // keep a grounded ibis on the CBD side of the river (George end is −X)
     function clampToLand(pos, r) {
-      const limit = CONFIG.world.river.nearS - r;
-      const s = sOf(pos.x, pos.z);
-      if (s > limit) { const over = s - limit; pos.x -= over/SQRT2; pos.z -= over/SQRT2; }
+      const nx = CONFIG.world.river.nearX + r;
+      if (pos.x < nx) pos.x = nx;
     }
 
     function buildWorld() {
-      const R = CONFIG.world.river;
-      const flat = (mesh) => { mesh.rotation.x = -Math.PI/2; return mesh; };
+      const R = CONFIG.world.river, M = CONFIG.world.mall;
+      const flat = (m) => { m.rotation.x = -Math.PI/2; return m; };
 
-      // --- river water (diagonal band) -----------------------------------
+      // --- river (crosses the −X / George-Street end) + South Bank -------
       const water = flat(new THREE.Mesh(
-        new THREE.PlaneGeometry(220, (R.farS - R.nearS) + 6),
+        new THREE.PlaneGeometry(R.nearX - R.farX, 190),
         new THREE.MeshLambertMaterial({ color: CONFIG.palette.water })));
-      water.rotateOnWorldAxis(new THREE.Vector3(0,1,0), Math.PI/4);   // long axis along the river
-      const bandC = (R.nearS + R.farS) / 2 / SQRT2;
-      water.position.set(bandC, R.y, bandC);
+      water.position.set((R.nearX + R.farX) / 2, R.y, 0);
       scene.add(water);
 
-      // --- South Bank (green strip beyond the water) ---------------------
       const south = flat(new THREE.Mesh(
-        new THREE.PlaneGeometry(220, 90),
+        new THREE.PlaneGeometry(80, 190),
         new THREE.MeshLambertMaterial({ color: CONFIG.palette.south })));
-      south.rotateOnWorldAxis(new THREE.Vector3(0,1,0), Math.PI/4);
-      const southC = (R.farS + 45) / SQRT2;
-      south.position.set(southC, 0.04, southC);
+      south.position.set(R.farX - 40, 0.04, 0);
       scene.add(south);
-      addWheel((R.farS + 13) / SQRT2, (R.farS + 13) / SQRT2);   // Wheel of Brisbane
 
-      // --- CBD blocks + buildings ----------------------------------------
-      const cell = 20, blockHalf = 7;
-      const buildings = [];                       // {x,z,w,d,h,color}
-      const pads = [];                            // {x,z,w,d}
-      const mall = { x0: -50, x1: 8, z0: -6, z1: 6 };   // Queen St Mall corridor
-      const tone = [0x9fa6ad, 0x8794a0, 0xb8b2a4, 0x7e8a86, 0xa6927d, 0x6f7d88];
+      addBridge();                       // Victoria Bridge (decorative landmark)
+      addWheel(R.farX - 10, -16);        // Wheel of Brisbane, on South Bank
+      addClockTower(-18, 34);            // City Hall clock tower, behind the NE side
 
-      for (let gx = -2; gx <= 2; gx++) {
-        for (let gz = -2; gz <= 2; gz++) {
-          const bx = gx*cell, bz = gz*cell;
-          if (sOf(bx, bz) > R.nearS - 2) continue;             // over / near the water
-          if (bx > mall.x0 - blockHalf && bx < mall.x1 + blockHalf &&
-              bz > mall.z0 - blockHalf && bz < mall.z1 + blockHalf) continue;   // Mall corridor
-          pads.push({ x: bx, z: bz, w: blockHalf*2, d: blockHalf*2 });
-          const n = rng() < 0.5 ? 1 : 2;
-          for (let i = 0; i < n; i++) {
-            const w = rand(5, 10), d = rand(5, 10), h = rand(6, 26);
-            const ox = n === 1 ? rand(-2, 2) : rand(-3.5, 3.5);
-            const oz = n === 1 ? rand(-2, 2) : rand(-3.5, 3.5);
-            const x = bx + ox, z = bz + oz;
-            buildings.push({ x, z, w, d, h, color: pick(tone) });
-            addCollider(x, z, w, d);
-          }
-        }
-      }
-
-      // --- Queen Street Mall pavement -----------------------------------
-      const mallMesh = flat(new THREE.Mesh(
-        new THREE.PlaneGeometry(mall.x1 - mall.x0, mall.z1 - mall.z0),
+      // --- Queen Street Mall pavement (terracotta spine) -----------------
+      const pave = flat(new THREE.Mesh(
+        new THREE.PlaneGeometry(M.x1 - M.x0 + 6, (M.z1 - M.z0) + 3),
         new THREE.MeshLambertMaterial({ color: CONFIG.palette.mall })));
-      mallMesh.position.set((mall.x0+mall.x1)/2, 0.03, (mall.z0+mall.z1)/2);
-      scene.add(mallMesh);
+      pave.position.set((M.x0 + M.x1) / 2, 0.03, 0);
+      scene.add(pave);
+      addCrossStreet(-4);                // Albert Street
+      addCrossStreet(47);                // Edward Street
 
-      // shopfronts lining the far side of the Mall
-      for (let x = mall.x0 + 6; x <= mall.x1 - 4; x += 11) {
-        const h = rand(5, 11), zz = mall.z0 - 5;
-        buildings.push({ x, z: zz, w: 8, d: 7, h, color: pick(tone) });
-        addCollider(x, zz, 8, 7);
+      // --- buildings in real order, George (−X) → Edward (+X) ------------
+      const B = [
+        // SW side (Elizabeth / river side) — odd street numbers
+        { name:'UPTOWN',            side:'sw', x0:-46, x1:-26, height:26, style:'modern',   color:0x8b9099, sign:{ fg:'#ffffff', bg:'#17191d' } },
+        { name:"HUNGRY JACK'S",     side:'sw', x0:-22, x1:-10, height:10, style:'heritage', color:0x8c5a3a, trim:0xb37c52, sign:{ fg:'#ffd23b', bg:'#d2232a' }, hj:true },
+        { name:'REGENT',            side:'sw', x0:2,   x1:14,  height:17, style:'heritage', color:0xcbb48e, trim:0xe6d6a8, sign:{ fg:'#e8c56b', bg:'#241a10' } },
+        { name:'WINTERGARDEN',      side:'sw', x0:16,  x1:30,  height:19, style:'modern',   color:0x7f93a0, sign:{ fg:'#ffffff', bg:'#1f7a57' } },
+        { name:"TATTERSALL'S",      side:'sw', x0:32,  x1:44,  height:15, style:'heritage', color:0xcfc29c, trim:0xe6dbbb, sign:{ fg:'#2f2416', bg:'#e4d9b6' } },
+        { name:'MACARTHUR CENTRAL', side:'sw', x0:49,  x1:59,  height:16, style:'heritage', color:0x9a5f45, trim:0xc08a62, sign:{ fg:'#f2e9d2', bg:'#4a2f22' } },
+        // NE side (Adelaide side) — even street numbers (first two: generic heritage)
+        {                           side:'ne', x0:-46, x1:-30, height:18, style:'heritage', color:0xb7a884, trim:0xd8cba3 },
+        {                           side:'ne', x0:-26, x1:-12, height:14, style:'heritage', color:0xa98f6e, trim:0xcbb48e },
+        { name:'BRISBANE ARCADE',   side:'ne', x0:2,   x1:14,  height:15, style:'arcade',   color:0xd8c49a, trim:0xece0c0, sign:{ fg:'#2f2416', bg:'#e8dcbb' } },
+        { name:'BROADWAY',          side:'ne', x0:16,  x1:26,  height:14, style:'modern',   color:0x8c8f97, sign:{ fg:'#ffffff', bg:'#222630' } },
+        { name:'QUEENSPLAZA',       side:'ne', x0:30,  x1:50,  height:24, style:'modern',   color:0x8f9aa6, sign:{ fg:'#efe7d8', bg:'#1b2430' } },
+      ];
+      for (const s of B) {
+        const cx = addBuilding(s);
+        if (s.hj) sceneData.hungryJacks = { x: cx, z: -2, radius: 9 };
       }
-      // near side: a couple of shopfronts (away from Hungry Jack's)
-      for (const x of [mall.x1 - 2, mall.x0 + 6]) {
-        const h = rand(5, 10), zz = mall.z1 + 5;
-        buildings.push({ x, z: zz, w: 8, d: 7, h, color: pick(tone) });
-        addCollider(x, zz, 8, 7);
+    }
+
+    // a flat panel on a building's mall-facing wall (facade detailing)
+    function wallPanel(x, y, z, w, h, d, color) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d),
+        new THREE.MeshLambertMaterial({ color }));
+      m.position.set(x, y, z); scene.add(m);
+    }
+    const spread = (cx, len, i, n) =>
+      n <= 1 ? cx : cx - (len*0.5 - 0.7) + (len - 1.4) * (i / (n - 1));
+
+    function addFacade(style, cx, wallZ, len, h, facing, s) {
+      const zc = wallZ + facing * 0.26;                          // just in front of the wall
+      wallPanel(cx, h + 0.35, wallZ + facing*0.15, len + 0.8, 0.7, 1.3, shade(s.color, -0.12)); // cornice
+      if (style === 'heritage' || style === 'arcade') {
+        const trim = s.trim || 0xd8c9a6;
+        const n = Math.max(2, Math.round(len / 3.4));
+        for (let i = 0; i < n; i++)
+          wallPanel(spread(cx, len, i, n), h*0.47, zc, 0.5, h*0.9, 0.35, trim);  // pilasters
+        wallPanel(cx, 0.9, zc, len, 1.8, 0.4, shade(s.color, -0.06));            // base course
+        const ew = Math.min(len*0.3, style === 'arcade' ? 4.6 : 3.4);
+        const eh = Math.min(h*0.52, style === 'arcade' ? 6.5 : 4.4);
+        wallPanel(cx, eh/2, wallZ + facing*0.34, ew, eh, 0.4, 0x241f1b);         // grand dark entry
+        if (style === 'arcade') wallPanel(cx, eh + 0.5, wallZ + facing*0.34, ew + 0.8, 1.0, 0.4, trim); // lintel
+      } else {                                                    // modern — glazing bands
+        const bands = Math.max(3, Math.round(h / 4));
+        for (let i = 1; i < bands; i++)
+          wallPanel(cx, h * i / bands, zc, len*0.92, 0.5, 0.2, 0x6b7f8c);
       }
-
-      // Hungry Jack's — the safe zone, prominent in the Mall (DESIGN.md §3.6)
-      const hjX = -20, hjZ = mall.z1 + 5;
-      addHungryJacks(hjX, hjZ);
-      sceneData.hungryJacks = { x: hjX, z: mall.z1 + 1, radius: 9 };
-
-      addClockTower(28, -34);     // City Hall-ish landmark
-      addBridge();                // elevated, decorative (not a walkway)
-
-      buildPads(pads);
-      buildBuildings(buildings);
     }
 
-    function buildBuildings(list) {
-      const inst = new THREE.InstancedMesh(
-        new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshLambertMaterial({ color: 0xffffff }), list.length);
-      const dummy = new THREE.Object3D(), col = new THREE.Color();
-      list.forEach((b, i) => {
-        dummy.position.set(b.x, b.h/2, b.z);
-        dummy.scale.set(b.w, b.h, b.d);
-        dummy.updateMatrix();
-        inst.setMatrixAt(i, dummy.matrix);
-        inst.setColorAt(i, col.setHex(b.color));
-      });
-      inst.instanceMatrix.needsUpdate = true;
-      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-      scene.add(inst);
+    // name-sign drawn to a canvas texture (asset-free), auto-fitting the text
+    function makeSign(text, opts = {}) {
+      const w = 512, h = 128, pad = 26;
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d');
+      ctx.fillStyle = opts.bg || '#15181d'; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = opts.fg || '#f3e8cf';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      let size = 78;
+      do { ctx.font = `700 ${size}px system-ui, Arial, sans-serif`; size -= 4; }
+      while (ctx.measureText(text).width > w - pad*2 && size > 16);
+      ctx.fillText(text, w/2, h/2 + 2);
+      const tex = new THREE.CanvasTexture(cv); tex.anisotropy = 4;
+      const pw = opts.width || 6;
+      return new THREE.Mesh(new THREE.PlaneGeometry(pw, pw * h / w),
+        new THREE.MeshBasicMaterial({ map: tex }));
     }
 
-    function buildPads(list) {
-      const inst = new THREE.InstancedMesh(
-        new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshLambertMaterial({ color: CONFIG.palette.pad }), list.length);
-      const dummy = new THREE.Object3D();
-      list.forEach((p, i) => {
-        dummy.position.set(p.x, 0.05, p.z);
-        dummy.scale.set(p.w, 0.1, p.d);
-        dummy.updateMatrix();
-        inst.setMatrixAt(i, dummy.matrix);
-      });
-      inst.instanceMatrix.needsUpdate = true;
-      scene.add(inst);
+    // place one building (body + facade + sign); returns its centre x
+    function addBuilding(s) {
+      const M = CONFIG.world.mall;
+      const dir = s.side === 'sw' ? -1 : 1;           // which side of the mall
+      const depth = s.depth || 12;
+      const edge = dir < 0 ? M.z0 : M.z1;
+      const cz = edge + dir * (depth/2 + 0.5);
+      const cx = (s.x0 + s.x1) / 2, len = s.x1 - s.x0, h = s.height;
+      const body = new THREE.Mesh(new THREE.BoxGeometry(len, h, depth),
+        new THREE.MeshLambertMaterial({ color: s.color }));
+      body.position.set(cx, h/2, cz); scene.add(body);
+      addCollider(cx, cz, len, depth);
+
+      const wallZ = cz - dir * (depth/2);             // the mall-facing wall
+      const facing = -dir;                            // +1 faces +z, −1 faces −z
+      addFacade(s.style || 'modern', cx, wallZ, len, h, facing, s);
+
+      if (s.name) {
+        const sign = makeSign(s.name, Object.assign({ width: Math.min(len*0.82, 13) }, s.sign || {}));
+        sign.position.set(cx, Math.min(h - 1.4, h*0.72), wallZ + facing*0.45);  // in front of pilasters
+        if (facing < 0) sign.rotation.y = Math.PI;    // face the mall
+        scene.add(sign);
+      }
+      return cx;
     }
 
-    function addHungryJacks(x, z) {
-      const body = new THREE.Mesh(new THREE.BoxGeometry(10, 7, 9),
-        new THREE.MeshLambertMaterial({ color: 0x6a4a35 }));
-      body.position.set(x, 3.5, z); scene.add(body);
-      const sign = new THREE.Mesh(new THREE.BoxGeometry(6.5, 2.4, 0.5),
-        new THREE.MeshStandardMaterial({ color: 0xf4b400, emissive: 0x6a4e00, emissiveIntensity: 0.6 }));
-      sign.position.set(x, 6.6, z - 4.7); scene.add(sign);   // faces the Mall (−z)
-      addCollider(x, z, 10, 9);
+    function addCrossStreet(x) {
+      const s = new THREE.Mesh(new THREE.PlaneGeometry(6, 62),
+        new THREE.MeshLambertMaterial({ color: CONFIG.palette.ground }));
+      s.rotation.x = -Math.PI/2; s.position.set(x, 0.045, 0); scene.add(s);
     }
 
-    function addClockTower(x, z) {
+    function addClockTower(x, z) {       // City Hall clock tower (background landmark)
       const sand = new THREE.MeshLambertMaterial({ color: 0xcdbb94 });
-      const base = new THREE.Mesh(new THREE.BoxGeometry(9, 10, 9), sand);
-      base.position.set(x, 5, z); scene.add(base);
-      const tower = new THREE.Mesh(new THREE.BoxGeometry(4.6, 16, 4.6), sand);
-      tower.position.set(x, 18, z); scene.add(tower);
+      const base = new THREE.Mesh(new THREE.BoxGeometry(10, 12, 10), sand);
+      base.position.set(x, 6, z); scene.add(base);
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(5, 22, 5), sand);
+      tower.position.set(x, 23, z); scene.add(tower);
       const face = new THREE.MeshStandardMaterial({ color: 0xf5f2e6, emissive: 0x2a2820, emissiveIntensity: 0.4 });
-      for (const [dx, dz, ry] of [[0,2.35,0],[0,-2.35,Math.PI],[2.35,0,Math.PI/2],[-2.35,0,-Math.PI/2]]) {
-        const f = new THREE.Mesh(new THREE.CircleGeometry(1.3, 16), face);
-        f.position.set(x+dx, 22, z+dz); f.rotation.y = ry; scene.add(f);
+      for (const [dx, dz, ry] of [[0,2.6,0],[0,-2.6,Math.PI],[2.6,0,Math.PI/2],[-2.6,0,-Math.PI/2]]) {
+        const f = new THREE.Mesh(new THREE.CircleGeometry(1.5, 16), face);
+        f.position.set(x+dx, 29, z+dz); f.rotation.y = ry; scene.add(f);
       }
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(3.7, 4.2, 4),
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(4.2, 5, 4),
         new THREE.MeshLambertMaterial({ color: 0x5a6b74 }));
-      roof.position.set(x, 28.2, z); roof.rotation.y = Math.PI/4; scene.add(roof);
-      addCollider(x, z, 9, 9);
+      roof.position.set(x, 36, z); roof.rotation.y = Math.PI/4; scene.add(roof);
     }
 
-    function addBridge() {
-      const R = CONFIG.world.river;
-      const cx = (R.nearS + R.farS) / 2 / SQRT2;
-      const deck = new THREE.Mesh(new THREE.BoxGeometry((R.farS - R.nearS) + 26, 0.6, 5),
+    function addBridge() {               // Victoria Bridge — spans the river along −X
+      const R = CONFIG.world.river, z = -16;
+      const len = (R.nearX - R.farX) + 20;
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(len, 0.7, 6),
         new THREE.MeshLambertMaterial({ color: 0x8a8f94 }));
-      deck.position.set(cx, 6, cx);
-      deck.rotateOnWorldAxis(new THREE.Vector3(0,1,0), -Math.PI/4);   // span across the river
-      scene.add(deck);
+      deck.position.set((R.nearX + R.farX)/2, 6, z); scene.add(deck);
       const pyMat = new THREE.MeshLambertMaterial({ color: 0x70757a });
-      for (const o of [-11, 11]) {
-        const py = new THREE.Mesh(new THREE.BoxGeometry(1.3, 13, 1.3), pyMat);
-        py.position.set(cx + o/SQRT2, 0, cx + o/SQRT2); scene.add(py);
+      for (const px of [R.nearX - 4, (R.nearX + R.farX)/2, R.farX + 4]) {
+        const py = new THREE.Mesh(new THREE.BoxGeometry(1.4, 13, 1.4), pyMat);
+        py.position.set(px, 0, z); scene.add(py);
       }
     }
 
-    function addWheel(x, z) {
+    function addWheel(x, z) {            // Wheel of Brisbane — faces across the river
       const wg = new THREE.Group();
       const steel = new THREE.MeshStandardMaterial({ color: 0xdbe2e6, metalness: 0.3, roughness: 0.5 });
-      wg.add(new THREE.Mesh(new THREE.TorusGeometry(7, 0.45, 8, 24), steel));
-      wg.add(new THREE.Mesh(new THREE.SphereGeometry(0.7, 8, 6), steel));
+      wg.add(new THREE.Mesh(new THREE.TorusGeometry(8, 0.5, 8, 24), steel));
+      wg.add(new THREE.Mesh(new THREE.SphereGeometry(0.8, 8, 6), steel));
       for (let i = 0; i < 6; i++) {                       // spokes
-        const s = new THREE.Mesh(new THREE.BoxGeometry(0.15, 14, 0.15), steel);
+        const s = new THREE.Mesh(new THREE.BoxGeometry(0.16, 16, 0.16), steel);
         s.rotation.z = i / 6 * Math.PI; wg.add(s);
       }
-      wg.position.set(x, 8.3, z);
-      wg.rotation.y = -Math.PI/4;                         // face the ring toward the CBD
+      const cabMat = new THREE.MeshStandardMaterial({ color: 0xcfd6da });
+      for (let i = 0; i < 8; i++) {                       // gondolas
+        const a = i / 8 * Math.PI * 2;
+        const cab = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.5), cabMat);
+        cab.position.set(Math.cos(a)*8, Math.sin(a)*8, 0); wg.add(cab);
+      }
+      wg.position.set(x, 9.5, z);
+      wg.rotation.y = Math.PI/2;                          // ring faces the CBD across the river
       scene.add(wg);
       const legMat = new THREE.MeshLambertMaterial({ color: 0x9aa1a6 });
-      for (const o of [-4.5, 4.5]) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.6, 9, 0.6), legMat);
-        leg.position.set(x + o/SQRT2, 4.5, z + o/SQRT2); scene.add(leg);
+      for (const o of [-5, 5]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.7, 10, 0.7), legMat);
+        leg.position.set(x, 5, z + o); scene.add(leg);
       }
     }
 
@@ -609,17 +616,16 @@
 
     const BINS = [];
     function buildBins() {
-      const C = CONFIG.bins, R = CONFIG.world.river;
+      const C = CONFIG.bins, M = CONFIG.world.mall;
       const binRng = mulberry32(CONFIG.world.seed + 99);
-      const lim = (CONFIG.world.size / 2) * CONFIG.ibis.bound;
       const inBuilding = (x, z, m) => COLLIDERS.some(c =>
         x > c.minX - m && x < c.maxX + m && z > c.minZ - m && z < c.maxZ + m);
       let tries = 0;
-      while (BINS.length < C.count && tries < 3000) {
+      while (BINS.length < C.count && tries < 5000) {
         tries++;
-        const x = (binRng() * 2 - 1) * lim, z = (binRng() * 2 - 1) * lim;
-        if (sOf(x, z) > R.nearS - 3) continue;             // keep on the CBD land
-        if (inBuilding(x, z, 1.2)) continue;               // clear of buildings
+        const x = M.x0 + 2 + binRng() * (M.x1 - M.x0 - 4);            // along the mall
+        const z = (M.z0 - 1.5) + binRng() * ((M.z1 + 1.5) - (M.z0 - 1.5));  // across it
+        if (inBuilding(x, z, 1.0)) continue;               // clear of buildings
         if (BINS.some(b => (b.x - x) ** 2 + (b.z - z) ** 2 < C.spacing ** 2)) continue;
         const kind = JUNK[(binRng() * JUNK.length) | 0];
         const value = C.minValue + ((binRng() * (C.maxValue - C.minValue + 1)) | 0);
@@ -695,9 +701,9 @@
         const sprint = (keys['ShiftLeft'] || keys['ShiftRight']) ? CONFIG.ibis.sprintMul : 1;
         ibis.position.addScaledVector(moveVec, CONFIG.ibis.walkSpeed * sprint * dt);
 
-        const lim = (CONFIG.world.size / 2) * CONFIG.ibis.bound;   // stay on the map
-        ibis.position.x = Math.max(-lim, Math.min(lim, ibis.position.x));
-        ibis.position.z = Math.max(-lim, Math.min(lim, ibis.position.z));
+        const B = CONFIG.world.bounds;                              // stay on the map
+        ibis.position.x = Math.max(B.minX, Math.min(B.maxX, ibis.position.x));
+        ibis.position.z = Math.max(B.minZ, Math.min(B.maxZ, ibis.position.z));
 
         const targetYaw = Math.atan2(moveVec.x, moveVec.z);        // face travel
         ibis.rotation.y = lerpAngle(ibis.rotation.y, targetYaw, CONFIG.ibis.turnLerp);
