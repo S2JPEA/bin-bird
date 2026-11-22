@@ -61,6 +61,32 @@
     }
     #mute:hover { background: rgba(30, 38, 50, .75); }
 
+    /* ---- start / win / fail overlay ---------------------------------------- */
+    #overlay {
+      position: fixed; inset: 0; z-index: 10; pointer-events: auto;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(10, 14, 20, .72); padding: 16px;
+    }
+    #overlay.hidden { display: none; }
+    .panel {
+      max-width: 560px; width: 100%; text-align: center; padding: 30px 28px;
+      background: rgba(20, 26, 34, .92); border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+    }
+    .panel h1 { font-size: 40px; letter-spacing: .01em; margin-bottom: 8px; }
+    #ov-sub { color: #cdd6df; font-size: 16px; line-height: 1.55; margin-bottom: 18px; }
+    #ov-sub b { color: #ffd86a; }
+    #ov-controls { color: #aeb9c4; font-size: 13px; line-height: 1.9; margin-bottom: 22px; }
+    #ov-controls b { color: #eef2f6; }
+    #ov-buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      pointer-events: auto; cursor: pointer; border: none; border-radius: 999px;
+      padding: 12px 28px; font-size: 16px; font-weight: 700;
+      color: #12161c; background: #ffd23b;
+    }
+    .btn.secondary { background: rgba(255, 255, 255, .13); color: #eef2f6; }
+    .btn:hover { filter: brightness(1.08); }
+
     /* small build tag so it's obvious which stage is live */
     #stage-tag {
       position: fixed; left: 10px; bottom: 8px;
@@ -91,9 +117,16 @@
     <div id="objective">Raid the bins · level up · fly to South Bank</div>
     <button id="mute" title="Mute (M)">🔊</button>
     <div id="toast"><span></span></div>
-    <!-- start / win / fail screens added in later stages -->
+    <div id="overlay" class="hidden">
+      <div class="panel">
+        <h1 id="ov-title">Bins Chickens</h1>
+        <p id="ov-sub"></p>
+        <div id="ov-controls"></div>
+        <div id="ov-buttons"></div>
+      </div>
+    </div>
   </div>
-  <div id="stage-tag">Bins Chickens — stage 9 · WASD move · Shift run · SPACE fly (lvl 2+) · M mute</div>
+  <div id="stage-tag">Bins Chickens · WASD move · Shift run · SPACE fly (lvl 2+) · M mute</div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -787,32 +820,115 @@
         showToast(LEVEL_LINES[player.level] || ('LEVEL ' + player.level + '!'));
       }
       updateHUD();
+      saveGame();                                  // persist level/food/health
     }
 
     /* ======================================================================
      * GAME STATE — win / fail boundaries (DESIGN.md §3.6, §5.4)
      * The win/fail *screens* arrive in stage 10; here we wire the transitions.
      * ==================================================================== */
-    const game = { mode: 'playing' };            // 'playing' | 'won'
+    const game = { mode: 'start' };              // 'start' | 'playing' | 'won' | 'failed'
 
-    function respawnAtHungryJacks(reason) {      // splash now; also health-zero later
+    function respawnAtHungryJacks() {
       const hj = sceneData.hungryJacks;
       ibis.position.set(hj.x, CONFIG.ibis.bodyHeight, hj.z);
       ibis.rotation.y = 0;
       vy = 0;
       player.health = player.maxHealth;          // recharge at the safe zone
       player.stamina = player.maxStamina;
+      updateHUD(); saveGame();
+    }
+    function splashFail() { SFX.splash(); showFail("💦 You went for a swim! Bin chickens can't do backstroke."); }
+    function winGame()    { SFX.win();  showWin(); }
+
+    /* ---- cookie save / load / reset (DESIGN.md §3.7) — just 3 numbers ---- */
+    const SAVE_KEY = 'binschickens';
+    function saveGame() {
+      try {
+        const data = JSON.stringify({ level: player.level, food: player.food, health: Math.round(player.health) });
+        document.cookie = SAVE_KEY + '=' + encodeURIComponent(data) + ';path=/;max-age=' + (60*60*24*365) + ';SameSite=Lax';
+      } catch (e) {}
+    }
+    function loadGame() {
+      try {
+        const m = document.cookie.match(new RegExp('(?:^|; )' + SAVE_KEY + '=([^;]*)'));
+        return m ? JSON.parse(decodeURIComponent(m[1])) : null;
+      } catch (e) { return null; }
+    }
+    function clearSave() { try { document.cookie = SAVE_KEY + '=;path=/;max-age=0'; } catch (e) {} }
+    function applySave(s) {
+      player.level = Math.max(1, Math.min(P.winLevel, (s.level | 0) || 1));
+      player.food = Math.max(0, s.food | 0);
+      player.maxHealth = maxHealthFor(player.level);
+      player.maxStamina = maxStaminaFor(player.level);
+      player.health = Math.max(1, Math.min(player.maxHealth, (s.health | 0) || player.maxHealth));
+      player.stamina = player.maxStamina;
       updateHUD();
-      showToast(reason, 2600);
     }
-    function splashFail() {
-      SFX.splash();
-      respawnAtHungryJacks("💦 SPLASH! Straight in the drink — back to Hungry Jack's.");
+    function resetRun() {
+      player.food = 0; player.level = 1;
+      player.maxHealth = maxHealthFor(1); player.health = player.maxHealth;
+      player.maxStamina = 0; player.stamina = 0; player.inSafeZone = false;
+      ibis.position.set(CONFIG.world.spawn.x, CONFIG.ibis.bodyHeight, CONFIG.world.spawn.z);
+      ibis.rotation.y = Math.atan2(-Math.sin(camYaw), -Math.cos(camYaw));
+      vy = 0;
+      for (const bin of BINS) setBinFull(bin, true);
+      hudFlight.style.display = 'none';
+      updateHUD();
     }
-    function winGame() {
+
+    /* ---- start / win / fail screens (DESIGN.md §3.9) ---- */
+    const overlay = document.getElementById('overlay');
+    const ovTitle = document.getElementById('ov-title');
+    const ovSub = document.getElementById('ov-sub');
+    const ovControls = document.getElementById('ov-controls');
+    const ovButtons = document.getElementById('ov-buttons');
+    const CONTROLS_HTML = '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> fly (lvl 2+) · click + <b>Mouse</b> to look · <b>M</b> mute';
+
+    function setButtons(list) {
+      ovButtons.innerHTML = '';
+      for (const b of list) {
+        const el = document.createElement('button');
+        el.className = 'btn' + (b.secondary ? ' secondary' : '');
+        el.textContent = b.label;
+        el.addEventListener('click', b.onClick);
+        ovButtons.appendChild(el);
+      }
+    }
+    function startPlaying() { game.mode = 'playing'; overlay.classList.add('hidden'); SFX.resume(); }
+
+    function showStart() {
+      game.mode = 'start';
+      if (document.exitPointerLock) document.exitPointerLock();
+      const saved = loadGame();
+      if (saved) applySave(saved);
+      ovTitle.textContent = 'Bins Chickens';
+      ovSub.innerHTML = "You're an Australian white ibis — a proper <b>bin chicken</b> loose in the Brisbane CBD. Raid the bins down Queen Street Mall, level up, dodge the junkies and cops, and when you're strong enough, <b>fly across the river to South Bank</b>."
+        + (saved ? "<br><br>Save found — <b>Level " + player.level + "</b>, $" + player.health + ", " + player.food + " food." : "");
+      ovControls.innerHTML = CONTROLS_HTML;
+      const btns = [{ label: saved ? 'Continue' : 'Play', onClick: startPlaying }];
+      if (saved) btns.push({ label: 'Reset save', secondary: true, onClick: () => { clearSave(); resetRun(); showStart(); } });
+      setButtons(btns);
+      overlay.classList.remove('hidden');
+    }
+    function showFail(reason) {
+      game.mode = 'failed';
+      if (document.exitPointerLock) document.exitPointerLock();
+      ovTitle.textContent = 'Failed!';
+      ovSub.innerHTML = reason;
+      ovControls.innerHTML = "Your level and food are safe — back to Hungry Jack's to recharge.";
+      setButtons([{ label: 'Continue', onClick: () => { respawnAtHungryJacks(); startPlaying(); } }]);
+      overlay.classList.remove('hidden');
+    }
+    function showWin() {
       game.mode = 'won';
-      SFX.win();
-      showToast("🏆 YOU MADE IT TO SOUTH BANK! Proper bin chicken, ya legend.", 999999);
+      if (document.exitPointerLock) document.exitPointerLock();
+      clearSave();
+      ovTitle.textContent = '🏆 You made it!';
+      ovSub.innerHTML = "You flew across the Brisbane River to <b>South Bank</b>. A true bin chicken legend — the ibises sing your name (it sounds like a squawk).";
+      ovControls.innerHTML = 'Final run — Level ' + player.level + ' · $' + Math.round(player.health) + ' · ' + player.food + ' food scoffed.';
+      setButtons([{ label: 'Play again', onClick: () => { resetRun(); startPlaying(); } }]);
+      overlay.classList.remove('hidden');
     }
 
     // Hungry Jack's safe zone: recharge health + flag immunity (DESIGN.md §3.6).
@@ -898,7 +1014,7 @@
           bin.food.position.y = 1.2 + Math.sin(t * 3 + bin.x) * 0.05;   // tempting bob
           bin.food.rotation.y += dt * 0.9;
           const dx = px - bin.x, dz = pz - bin.z;
-          if (dx * dx + dz * dz < C.pickupRadius * C.pickupRadius) {
+          if (game.mode === 'playing' && dx * dx + dz * dz < C.pickupRadius * C.pickupRadius) {
             player.food += bin.value;
             setBinFull(bin, false);
             bin.refillLeft = C.refill;
@@ -1069,6 +1185,7 @@
 
     buildEnemies();
     updateHUD();
+    showStart();          // begin on the title screen (loads any saved game)
 
     /* ======================================================================
      * RESIZE
@@ -1155,7 +1272,7 @@
 
         // safe zone recharge + health-zero fail (DESIGN.md §3.6)
         updateSafeZone(dt, clock.getElapsedTime());
-        if (player.health <= 0) respawnAtHungryJacks("😵 Out cold — mugged to $0! Back to Hungry Jack's.");
+        if (player.health <= 0) showFail("😵 Mugged to $0! The junkies cleaned you right out.");
 
         animateIbis(ibis, dt, moving, airborne);
       } else {
