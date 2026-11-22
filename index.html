@@ -85,7 +85,7 @@
     <div id="toast"><span></span></div>
     <!-- start / win / fail screens added in later stages -->
   </div>
-  <div id="stage-tag">Bins Chickens — stage 7 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
+  <div id="stage-tag">Bins Chickens — stage 8 · WASD move · Shift run · SPACE fly (lvl 2+) · click to look</div>
 
   <script type="module">
     import * as THREE from 'three';
@@ -161,6 +161,18 @@
       },
       safeZone: {
         rechargeRate: 0.7,   // $/second healed inside Hungry Jack's (≈ $1 / 1.5s)
+      },
+      enemies: {
+        cullRadius: 70,      // only run AI for enemies within this distance
+        junkies: {
+          count: 5, detectRadius: 8, contactRadius: 1.7,
+          speed: 6,          // < ibis walkSpeed (9) → always escapable
+          wanderSpeed: 2.4, damage: 1, cooldown: 2,   // $1 per hit, 2s between hits
+        },
+        police: {
+          count: 3, shooRadius: 5.5, patrolRadius: 9,
+          speed: 3, pushStrength: 11,  // shove strength (units/s); no damage
+        },
       },
     };
 
@@ -807,6 +819,159 @@
     }
 
     buildBins();
+
+    /* ======================================================================
+     * ENEMIES — junkies (ask for $1 or a ciggie, drain health) and police
+     * (shoo you away). Both stand down in the safe zone. (DESIGN.md §3.5)
+     * ==================================================================== */
+    const ENEMIES = [];
+    const randOf = (a) => a[(Math.random() * a.length) | 0];
+    const JUNKIE_LINES = [
+      "“Oi mate, spare a dollar?”  −$1",
+      "“Got a ciggie, legend?”  −$1",
+      "“C'mon, just a gold coin!”  −$1",
+      "“Help a bloke out, eh?”  −$1",
+    ];
+
+    function makePerson(o) {
+      const g = new THREE.Group();
+      const skin  = new THREE.MeshLambertMaterial({ color: o.skin || 0xc49a74 });
+      const cloth = new THREE.MeshLambertMaterial({ color: o.cloth });
+      const dark  = new THREE.MeshLambertMaterial({ color: o.legs || 0x2c2f36 });
+      const torso = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.95, 0.42), cloth);
+      torso.position.y = 1.2; g.add(torso);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), skin);
+      head.position.y = 1.9; g.add(head);
+      for (const sx of [-1, 1]) {                       // arms
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.72, 0.17), cloth);
+        arm.position.set(sx * 0.46, 1.2, 0.02); g.add(arm);
+      }
+      const legs = [];
+      for (const sx of [-1, 1]) {
+        const leg = new THREE.Group(); leg.position.set(sx * 0.18, 0.72, 0);
+        const shin = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.72, 0.24), dark);
+        shin.position.y = -0.36; leg.add(shin);
+        g.add(leg); legs.push(leg);
+      }
+      if (o.hood) {                                     // junkie hood over the head
+        const hood = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 8), cloth);
+        hood.position.y = 1.92; hood.scale.set(1, 1, 1.15); g.add(hood);
+      }
+      if (o.cap) {                                      // police cap
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.3, 0.2, 10),
+          new THREE.MeshLambertMaterial({ color: o.cap }));
+        cap.position.y = 2.12; g.add(cap);
+        const peak = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.06, 0.22),
+          new THREE.MeshLambertMaterial({ color: o.cap }));
+        peak.position.set(0, 2.07, 0.28); g.add(peak);
+      }
+      g.userData = { legs };
+      return g;
+    }
+
+    function makeBubble(text) {
+      const w = 256, h = 88;
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      const ctx = cv.getContext('2d');
+      ctx.fillStyle = 'rgba(255,255,255,0.96)';
+      ctx.fillRect(4, 4, w - 8, h - 24);
+      ctx.beginPath(); ctx.moveTo(w/2 - 11, h - 20); ctx.lineTo(w/2, h - 2); ctx.lineTo(w/2 + 11, h - 20); ctx.fill();
+      ctx.fillStyle = '#16181c'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      let size = 34; do { ctx.font = `bold ${size}px system-ui, Arial`; size -= 3; }
+      while (ctx.measureText(text).width > w - 28 && size > 14);
+      ctx.fillText(text, w/2, (h - 24) / 2 + 4);
+      const tex = new THREE.CanvasTexture(cv);
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+      spr.scale.set(3.2, 1.1, 1); spr.position.y = 3.2; spr.visible = false;
+      return spr;
+    }
+
+    function addEnemy(type, x, z) {
+      const g = type === 'junkie'
+        ? makePerson({ cloth: 0x565a60, legs: 0x33373f, skin: 0xb5906a, hood: true })
+        : makePerson({ cloth: 0x203a6b, legs: 0x1b2330, skin: 0xcaa07a, cap: 0x15233d });
+      g.position.set(x, 0, z);
+      const bubble = makeBubble(type === 'junkie' ? '$1 or a ciggie?' : 'Move along!');
+      g.add(bubble);
+      scene.add(g);
+      ENEMIES.push({ type, group: g, legs: g.userData.legs, bubble,
+        homeX: x, homeZ: z, wt: null, cooldown: 0, phase: Math.random() * 6 });
+    }
+
+    function buildEnemies() {
+      const J = [[-34, 3], [-6, -3], [11, 3], [27, -3], [41, 2]];   // junkie haunts
+      const Pol = [[-44, 0], [3, -2], [37, 2]];                     // police patrols
+      for (let i = 0; i < CONFIG.enemies.junkies.count; i++) addEnemy('junkie', J[i][0], J[i][1]);
+      for (let i = 0; i < CONFIG.enemies.police.count;  i++) addEnemy('police', Pol[i][0], Pol[i][1]);
+    }
+
+    function wanderVel(e, speed, radius) {
+      const p = e.group.position;
+      if (!e.wt || (p.x - e.wt.x) ** 2 + (p.z - e.wt.z) ** 2 < 1.2) {
+        e.wt = { x: e.homeX + (Math.random() * 2 - 1) * radius,
+                 z: e.homeZ + (Math.random() * 2 - 1) * 3 };
+      }
+      const dx = e.wt.x - p.x, dz = e.wt.z - p.z, d = Math.hypot(dx, dz) || 1;
+      return [dx / d * speed, dz / d * speed];
+    }
+
+    function clampEnemy(p) {                             // on the mall, out of the safe zone
+      const M = CONFIG.world.mall, hj = sceneData.hungryJacks;
+      p.x = Math.max(M.x0 - 2, Math.min(M.x1 + 3, p.x));
+      p.z = Math.max(M.z0 - 1, Math.min(M.z1 + 1, p.z));
+      const dx = p.x - hj.x, dz = p.z - hj.z, d = Math.hypot(dx, dz), minD = hj.radius + 1;
+      if (d < minD && d > 0.01) { p.x = hj.x + dx / d * minD; p.z = hj.z + dz / d * minD; }
+    }
+
+    function updateEnemies(dt) {
+      const EC = CONFIG.enemies;
+      const px = ibis.position.x, pz = ibis.position.z;
+      const grounded = ibis.position.y <= CONFIG.ibis.bodyHeight + 0.3;
+      for (const e of ENEMIES) {
+        const p = e.group.position;
+        const ddx = px - p.x, ddz = pz - p.z, dist = Math.hypot(ddx, ddz) || 0.0001;
+        if (dist > EC.cullRadius) { e.bubble.visible = false; continue; }
+        let vx = 0, vz = 0, facing = null;
+
+        if (e.type === 'junkie') {
+          const J = EC.junkies;
+          e.cooldown = Math.max(0, e.cooldown - dt);
+          if (dist < J.detectRadius && grounded && !player.inSafeZone) {
+            vx = ddx / dist * J.speed; vz = ddz / dist * J.speed; facing = [ddx, ddz];
+            e.bubble.visible = true;
+            if (dist < J.contactRadius && e.cooldown <= 0) {
+              player.health = Math.max(0, player.health - J.damage);
+              e.cooldown = J.cooldown; updateHUD();
+              showToast(randOf(JUNKIE_LINES), 1500);
+            }
+          } else {
+            e.bubble.visible = false;
+            [vx, vz] = wanderVel(e, J.wanderSpeed, 7); facing = [vx, vz];
+          }
+        } else {                                        // police
+          const Pl = EC.police;
+          if (dist < Pl.shooRadius && grounded && !player.inSafeZone) {
+            e.bubble.visible = true; facing = [ddx, ddz];
+            ibis.position.x += ddx / dist * Pl.pushStrength * dt;   // shove the ibis away
+            ibis.position.z += ddz / dist * Pl.pushStrength * dt;
+            vx = ddx / dist * Pl.speed * 0.4; vz = ddz / dist * Pl.speed * 0.4;
+          } else {
+            e.bubble.visible = false;
+            [vx, vz] = wanderVel(e, Pl.speed * 0.7, Pl.patrolRadius); facing = [vx, vz];
+          }
+        }
+
+        p.x += vx * dt; p.z += vz * dt;
+        clampEnemy(p);
+        resolveCollisions(p, 0.6);
+        if (facing && (facing[0] || facing[1])) e.group.rotation.y = Math.atan2(facing[0], facing[1]);
+        e.phase += dt * (Math.hypot(vx, vz) > 0.2 ? 9 : 0);
+        const sw = Math.sin(e.phase) * 0.5;
+        e.legs[0].rotation.x = sw; e.legs[1].rotation.x = -sw;
+      }
+    }
+
+    buildEnemies();
     updateHUD();
 
     /* ======================================================================
@@ -874,6 +1039,9 @@
           const targetYaw = Math.atan2(moveVec.x, moveVec.z); // face travel
           ibis.rotation.y = lerpAngle(ibis.rotation.y, targetYaw, CONFIG.ibis.turnLerp);
         }
+
+        // enemies (junkies drain $, police shove) — before clamping so pushes resolve
+        updateEnemies(dt);
 
         // bounds + collisions
         const Bnd = CONFIG.world.bounds;
